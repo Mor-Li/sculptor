@@ -475,19 +475,22 @@ def _flash_status(stdscr, text: str) -> None:
 
 
 def _eligible_turns_for_auto_merge(
-    session: Session, min_tokens: int
+    session: Session, min_tokens: int, skip_last: int = 0
 ) -> list[tuple[int, list[int], int]]:
     """For each turn that contains at least 2 mergeable assistant/tool_result
     records totaling >= min_tokens, return (turn_index, record_indices, tokens).
-    Skips records that are already part of a saved merge."""
+    Skips records already part of a saved merge, and the last `skip_last`
+    turns with user input (recent context the user is likely still working on)."""
     already_merged: set[int] = set()
     for m in session.merges:
         already_merged.update(m.record_indices)
 
+    candidate_turns = [t for t in session.turns if t.user_block is not None]
+    if skip_last > 0:
+        candidate_turns = candidate_turns[:-skip_last] if skip_last < len(candidate_turns) else []
+
     eligible: list[tuple[int, list[int], int]] = []
-    for turn in session.turns:
-        if turn.user_block is None:
-            continue
+    for turn in candidate_turns:
         rec_indices: list[int] = []
         rec_tokens = 0
         seen: set[int] = set()
@@ -510,10 +513,12 @@ def _do_merge_all_turns(
     session: Session,
     merge_model: str,
     min_tokens: int = 1500,
+    skip_last: int = 0,
 ) -> str:
-    """One LLM call per eligible turn. Skips turns smaller than min_tokens
-    and turns whose records are already inside an existing merge."""
-    eligible = _eligible_turns_for_auto_merge(session, min_tokens)
+    """One LLM call per eligible turn. Skips turns smaller than min_tokens,
+    turns whose records are already inside an existing merge, and the last
+    `skip_last` turns (preserve recent context)."""
+    eligible = _eligible_turns_for_auto_merge(session, min_tokens, skip_last=skip_last)
     if not eligible:
         return (
             f"No eligible turns (need ≥2 records and ≥{min_tokens:,} tokens of "
@@ -844,6 +849,13 @@ def parse_args() -> argparse.Namespace:
         "--merge-turns to consider it (default: 1500).",
     )
     p.add_argument(
+        "--merge-turns-skip-last",
+        type=int,
+        default=0,
+        help="Don't merge the most recent N user turns (preserve recent "
+        "context the user is still actively working on). Default: 0.",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Don't write anything; just print what would change.",
@@ -864,10 +876,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def _cli_merge_all_turns(
-    session: Session, *, merge_model: str, min_tokens: int, quiet: bool
+    session: Session,
+    *,
+    merge_model: str,
+    min_tokens: int,
+    skip_last: int,
+    quiet: bool,
 ) -> int:
     """Non-interactive per-turn auto merge. Returns number of merges added."""
-    eligible = _eligible_turns_for_auto_merge(session, min_tokens)
+    eligible = _eligible_turns_for_auto_merge(
+        session, min_tokens, skip_last=skip_last
+    )
     if not eligible:
         if not quiet:
             print(
@@ -960,6 +979,7 @@ def main() -> int:
                 session,
                 merge_model=args.merge_model,
                 min_tokens=args.merge_turns_min_tokens,
+                skip_last=args.merge_turns_skip_last,
                 quiet=args.print_path,
             )
         if not args.print_path:

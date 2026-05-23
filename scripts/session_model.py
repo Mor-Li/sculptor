@@ -69,8 +69,8 @@ BLOCK_USER_INPUT = "user_input"
 BLOCK_IMAGE = "image"
 BLOCK_OTHER = "other"
 
-HIDEABLE_BLOCKS = {BLOCK_TEXT, BLOCK_THINKING, BLOCK_TOOL_RESULT}
-LOCKED_BLOCKS = {BLOCK_TOOL_USE, BLOCK_USER_INPUT}
+HIDEABLE_BLOCKS = {BLOCK_TEXT, BLOCK_THINKING, BLOCK_TOOL_RESULT, BLOCK_TOOL_USE}
+LOCKED_BLOCKS = {BLOCK_USER_INPUT}
 
 
 @dataclass
@@ -351,7 +351,6 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
                     record_index=record_index,
                     block_index=bi,
                     kind=BLOCK_TOOL_USE,
-                    locked=True,
                     preview=preview,
                     size_chars=len(inp_json),
                     size_tokens=count_tokens(inp_json),
@@ -853,10 +852,34 @@ def apply_edits_and_save(
                     )
                 continue
 
-            # tool_use / user text / image / other: locked, always kept
-            if (rtype == "user" and btype in ("text", "image")) or (
-                rtype == "assistant" and btype == "tool_use"
-            ):
+            # tool_use: kept as-is, or stubbed with a hidden-marker input
+            # (the tool_use itself stays so its tool_use_id can still pair
+            # with the matching tool_result; only the args payload is hidden).
+            if rtype == "assistant" and btype == "tool_use":
+                if keep:
+                    new_content.append(b)
+                else:
+                    orig_json = json.dumps(b.get("input") or {}, ensure_ascii=False)
+                    new_b = dict(b)
+                    new_b["input"] = {
+                        "_sculptor_hidden": True,
+                        "_original_size": len(orig_json),
+                    }
+                    new_content.append(new_b)
+                    modified_blocks.append(
+                        {
+                            "record_uuid": rec.get("uuid"),
+                            "block_index": bi,
+                            "action": "tool_use_stubbed",
+                            "tool_use_id": b.get("id"),
+                            "tool_name": b.get("name"),
+                            "original_size": len(orig_json),
+                        }
+                    )
+                continue
+
+            # user text / image: locked, always kept
+            if rtype == "user" and btype in ("text", "image"):
                 new_content.append(b)
                 continue
 

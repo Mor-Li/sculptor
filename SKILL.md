@@ -28,7 +28,7 @@ description: 主动管理 Claude Code 对话上下文（context-edit / 裁剪 hi
 | block 类型 | 锁定？ | 隐藏时的行为 |
 |---|---|---|
 | `user_input` 真用户输入 | 🔒 永远保留 | — |
-| `tool_use` Claude 发起的工具调用 | 🔒 永远保留 | — |
+| `tool_use` Claude 发起的工具调用 | ✓ 可隐藏 | `input` 替换成 `{"_sculptor_hidden": true, "_original_size": N}` 桩；保留 type/id/name，确保跟 tool_result 的配对仍合法 |
 | `tool_result` 工具返回 | ✓ 可隐藏 | 内容替换成 `[hidden by sculptor · original size N chars]` 桩，保持 tool_use/tool_result 配对合法 |
 | `text` assistant 文本 | ✓ 可隐藏 | 从 record 的 content array 删除；空了则整条 record 也删，自动缝合 `parentUuid` 链 |
 | `thinking` assistant 思考 | ✓ 可隐藏 | 同 text |
@@ -116,6 +116,8 @@ TUI 快捷键：
 ```
 
 对**每个**有 ≥ `--merge-turns-min-tokens` (默认 1500) 个 assistant token 的 user turn，独立调一次 LLM 把整 turn 总结成一条 synthetic assistant text record。N 个 eligible turn = N 次串行 LLM 调用，每次大约 10–40s。不进 TUI，不需交互确认；写新 jsonl 并打印路径。可与 `--drop-*` 规则组合：先 drop 明显垃圾再 per-turn merge。已经在之前手动 merge 过的 record 会被跳过，不会重复 merge。
+
+加 `--merge-turns-skip-last N` 保留最近 N 个 user turn 不动 —— 通常 agent 还在用这几轮的上下文，不要总结。AI 主动 compact 自己历史时建议 `--merge-turns-skip-last 2` 起步。
 
 TUI 里同样的功能绑在 `M` 大写键上，有一次性确认弹窗。
 

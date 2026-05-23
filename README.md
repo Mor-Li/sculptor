@@ -58,7 +58,7 @@ Each Claude Code session is a `~/.claude/projects/<encoded-cwd>/<sid>.jsonl`, on
 | block | locked? | what "hide" means |
 |---|---|---|
 | user input | 🔒 | always kept |
-| tool_use | 🔒 | always kept |
+| tool_use | ✓ | `input` replaced with `{"_sculptor_hidden": true, "_original_size": N}`; type/id/name preserved so the tool_use ↔ tool_result pairing stays API-valid |
 | tool_result | ✓ | content replaced with a stub `[hidden by sculptor · original size N chars]` so the tool_use/tool_result pair stays API-valid |
 | assistant text | ✓ | block dropped; record dropped if empty; parentUuid chain auto-stitched |
 | assistant thinking | ✓ | same as text |
