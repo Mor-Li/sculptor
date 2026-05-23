@@ -223,6 +223,35 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
         (b.get("type") in ("text",)) for b in content
     )
 
+    # For assistant records, the Anthropic API returns the real generation
+    # cost in message.usage.output_tokens. Use it for thinking blocks because
+    # the local `thinking` text field is a sanitized empty/short placeholder —
+    # the real reasoning lives server-side, keyed by `signature`. Everything
+    # else (assistant text, tool_use args) is stored verbatim locally, so
+    # tiktoken on local content is accurate for those.
+    thinking_token_budget = 0
+    if rtype == "assistant":
+        usage = msg.get("usage") or {}
+        output_tokens = int(usage.get("output_tokens") or 0)
+        if output_tokens:
+            non_thinking_local_tokens = 0
+            thinking_count = 0
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                bt = b.get("type")
+                if bt == "thinking":
+                    thinking_count += 1
+                elif bt == "text":
+                    non_thinking_local_tokens += count_tokens(b.get("text", ""))
+                elif bt == "tool_use":
+                    non_thinking_local_tokens += count_tokens(
+                        json.dumps(b.get("input") or {}, ensure_ascii=False)
+                    )
+            if thinking_count:
+                remainder = max(0, output_tokens - non_thinking_local_tokens)
+                thinking_token_budget = remainder // thinking_count
+
     for bi, b in enumerate(content):
         if not isinstance(b, dict):
             continue
@@ -285,6 +314,10 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
             )
         elif rtype == "assistant" and btype == "thinking":
             text = b.get("thinking", "") or b.get("text", "")
+            # Prefer the API-reported output_tokens (apportioned across thinking
+            # blocks in this record); fall back to tiktoken on the local
+            # placeholder text when usage is absent (older records, sidechain).
+            tokens = thinking_token_budget or count_tokens(text)
             blocks.append(
                 Block(
                     record_index=record_index,
@@ -292,7 +325,7 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
                     kind=BLOCK_THINKING,
                     preview=_one_line(text, 200),
                     size_chars=len(text),
-                    size_tokens=count_tokens(text),
+                    size_tokens=tokens,
                     raw=b,
                 )
             )
