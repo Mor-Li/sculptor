@@ -7,19 +7,19 @@ This repo is a Claude Code [skill](https://docs.claude.com/en/docs/claude-code/s
 
 ---
 
-## Status & relationship to the Sculptor paper
+## Relationship to the Sculptor paper
 
-This tool is named after, and inspired by, our ICLR 2026 paper:
+This repo is a **skill-level implementation** and follow-up of our ICLR 2026 paper:
 
 > **Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management.**
 > Mo Li, L.H. Xu, Qitai Tan, Long Ma, Ting Cao, Yunxin Liu. ICLR 2026.
 > [arXiv:2508.04664](https://arxiv.org/abs/2508.04664)
 
-**The paper's full system is not (yet) open-sourced.** This repo is a separate, more pragmatic tool I (Mo) built afterwards:
+The two share the same core idea — give the agent (or its user) explicit control over what stays in the context window, instead of relying on opaque auto-compaction. This repo is the practical, Claude-Code-shaped version of that idea:
 
-- The paper proposes three categories of cognitive tools for LLMs — *fragmentation*, *summary/hide/restore*, and *precise search*. This repo implements a hands-on version of the **summary/hide/restore** family, specifically for the Claude Code workflow.
-- The TUI is meant to be used by a human (or by Claude itself in `--auto` mode) to actively manage the Claude Code conversation jsonl on disk, *before* you hit the auto-compact threshold. You see exactly what's being removed; no black box.
-- The merge feature uses an external LLM (via [LiteLLM](https://github.com/BerriAI/litellm)-compatible endpoint) to summarize a contiguous span of records into one synthetic assistant text record, with parentUuid stitching and tool_use/tool_result re-balancing so `claude --resume` keeps working.
+- The paper proposes three families of cognitive tools — *fragmentation*, *summary/hide/restore*, and *precise search*. This skill is a focused implementation of the **summary/hide/restore** family, scoped to the Claude Code session jsonl on disk.
+- The TUI lets a human (or Claude itself in `--auto` mode) inspect and edit the conversation *before* the auto-compact threshold hits. You see exactly what's being removed; no black box.
+- The merge feature uses an external LLM (via a [LiteLLM](https://github.com/BerriAI/litellm)-compatible endpoint) to summarize a contiguous span of records into one synthetic assistant-text record, with parentUuid stitching and tool_use/tool_result re-balancing so `claude --resume` keeps working.
 
 If you build on this for a paper, cite Sculptor:
 
