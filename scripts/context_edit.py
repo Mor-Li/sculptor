@@ -513,67 +513,104 @@ def _do_merge_all_turns(
     session: Session,
     merge_model: str,
     min_tokens: int = 1500,
-    skip_last: int = 0,
+    skip_last: int = 3,
+    concurrency: int = 8,
 ) -> str:
-    """One LLM call per eligible turn. Skips turns smaller than min_tokens,
-    turns whose records are already inside an existing merge, and the last
+    """Parallel per-turn merge. Each turn is sent independently to the LLM
+    in its own thread; results stream back via `as_completed`. Skips turns
+    < min_tokens, turns already inside an existing merge, and the last
     `skip_last` turns (preserve recent context)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
     eligible = _eligible_turns_for_auto_merge(session, min_tokens, skip_last=skip_last)
     if not eligible:
         return (
             f"No eligible turns (need ≥2 records and ≥{min_tokens:,} tokens of "
-            f"assistant content per turn)."
+            f"assistant content; skip_last={skip_last})."
         )
 
     total_tokens = sum(t[2] for t in eligible)
     confirm_msg = (
-        f"Merge {len(eligible)} turn(s) (~{total_tokens:,} tokens total → "
-        f"{len(eligible)}× {merge_model} calls)? [y/N] "
+        f"Merge {len(eligible)} turn(s), ~{total_tokens:,} tok total, "
+        f"{concurrency}-way parallel → {merge_model}? [y/N] "
     )
     if not _confirm(stdscr, confirm_msg):
         return "Merge-all cancelled."
 
-    done = 0
-    failed = 0
-    for n, (turn_idx, rec_indices, tokens) in enumerate(eligible, 1):
+    # Sequential prep
+    jobs: list[dict] = []
+    skipped = 0
+    for turn_idx, rec_indices, tokens in eligible:
         try:
-            indices, _warnings = resolve_merge_range(session, set(rec_indices))
-        except ValueError as exc:
-            failed += 1
-            _flash_status(
-                stdscr, f"turn {turn_idx}: skipped ({exc}) [{n}/{len(eligible)}]"
-            )
+            indices, _w = resolve_merge_range(session, set(rec_indices))
+        except ValueError:
+            skipped += 1
             continue
         if len(indices) < 2:
             continue
         prompt = build_merge_prompt(session, indices)
         if len(prompt) > 400_000:
-            failed += 1
-            _flash_status(
-                stdscr,
-                f"turn {turn_idx}: too large ({len(prompt):,} chars), skipped "
-                f"[{n}/{len(eligible)}]",
-            )
+            skipped += 1
             continue
-        _flash_status(
-            stdscr,
-            f"[{n}/{len(eligible)}] turn {turn_idx}: calling {merge_model} on "
-            f"{len(indices)} records (~{tokens:,} tok)…",
-        )
-        try:
-            summary = _execute_llm_merge(session, indices, prompt, merge_model)
-            if summary is None:
+        jobs.append({"turn_idx": turn_idx, "indices": indices, "prompt": prompt, "tokens": tokens})
+
+    if not jobs:
+        return f"No mergeable turns after validation (skipped {skipped})."
+
+    lock = threading.Lock()
+    done = 0
+    failed = skipped
+
+    def _run(job):
+        return job, _call_llm(job["prompt"], merge_model)
+
+    _flash_status(
+        stdscr,
+        f"Dispatching {len(jobs)} turn merges to {merge_model} "
+        f"({concurrency}-way parallel)…",
+    )
+
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        futures = [pool.submit(_run, j) for j in jobs]
+        for n, fut in enumerate(as_completed(futures), 1):
+            try:
+                job, summary = fut.result()
+            except Exception as exc:  # noqa: BLE001
                 failed += 1
-            else:
+                _flash_status(stdscr, f"[{n}/{len(jobs)}] LLM error: {exc}")
+                continue
+            if not summary or not summary.strip():
+                failed += 1
+                _flash_status(
+                    stdscr,
+                    f"[{n}/{len(jobs)}] turn {job['turn_idx']}: empty response",
+                )
+                continue
+            summary_clean = summary.strip()
+            parent = session.records[job["indices"][0]].get("parentUuid")
+            with lock:
+                session.merges.append(
+                    Merge(
+                        record_indices=job["indices"],
+                        summary_text=summary_clean,
+                        summary_tokens=count_tokens(summary_clean),
+                        new_uuid=str(uuid.uuid4()),
+                        insertion_parent_uuid=parent,
+                        label=f"merged {len(job['indices'])} records",
+                    )
+                )
                 done += 1
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
             _flash_status(
                 stdscr,
-                f"turn {turn_idx}: LLM error ({exc}) [{n}/{len(eligible)}]",
+                f"[{n}/{len(jobs)}] turn {job['turn_idx']}: ✓ "
+                f"{job['tokens']:,} tok → {len(summary_clean):,} chars",
             )
 
-    return f"✓ merged {done} turns" + (f", {failed} failed/skipped" if failed else "")
+    return (
+        f"✓ merged {done} turns"
+        + (f", {failed} failed/skipped" if failed else "")
+    )
 
 
 def _call_llm(prompt: str, model: str) -> str:
@@ -774,8 +811,8 @@ def _show_help(stdscr) -> None:
         "  v                start/cancel VISUAL selection at cursor",
         "  ↑/↓ (in visual)  extend selection",
         "  m (in visual)    merge selected records → LLM summary",
-        "  M                auto-merge every eligible user turn (one LLM call",
-        "                   per turn; min 1500 tokens of assistant content)",
+        "  M                auto-merge every eligible user turn in parallel",
+        "                   (skips turns <1500 tok and the last 3 turns)",
         "  esc              cancel visual mode",
         "",
         "View:",
@@ -851,9 +888,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--merge-turns-skip-last",
         type=int,
-        default=0,
+        default=3,
         help="Don't merge the most recent N user turns (preserve recent "
-        "context the user is still actively working on). Default: 0.",
+        "context the agent is still actively working on). Default: 3.",
+    )
+    p.add_argument(
+        "--merge-turns-concurrency",
+        type=int,
+        default=8,
+        help="Maximum concurrent LLM calls when --merge-turns runs. Each turn "
+        "is independent (we send only that turn's content), so they can run "
+        "in parallel. Default: 8.",
     )
     p.add_argument(
         "--dry-run",
@@ -881,9 +926,15 @@ def _cli_merge_all_turns(
     merge_model: str,
     min_tokens: int,
     skip_last: int,
+    concurrency: int,
     quiet: bool,
 ) -> int:
-    """Non-interactive per-turn auto merge. Returns number of merges added."""
+    """Non-interactive per-turn auto merge. Each turn's merge is independent
+    (only that turn's content is sent to the LLM), so they run in parallel
+    via a thread pool. Returns number of merges added."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
     eligible = _eligible_turns_for_auto_merge(
         session, min_tokens, skip_last=skip_last
     )
@@ -891,21 +942,21 @@ def _cli_merge_all_turns(
         if not quiet:
             print(
                 f"No eligible turns for --merge-turns (need ≥2 records and "
-                f"≥{min_tokens:,} tokens of assistant content).",
+                f"≥{min_tokens:,} tokens of assistant content; "
+                f"skip_last={skip_last}).",
                 file=sys.stderr,
             )
         return 0
 
-    done = 0
-    for n, (turn_idx, rec_indices, tokens) in enumerate(eligible, 1):
+    # Sequential prep: validate ranges and build prompts up front so the
+    # parallel section only does network-bound LLM calls.
+    jobs: list[dict] = []
+    for turn_idx, rec_indices, tokens in eligible:
         try:
             indices, _w = resolve_merge_range(session, set(rec_indices))
         except ValueError as exc:
             if not quiet:
-                print(
-                    f"[{n}/{len(eligible)}] turn {turn_idx}: skipped ({exc})",
-                    file=sys.stderr,
-                )
+                print(f"turn {turn_idx}: skipped ({exc})", file=sys.stderr)
             continue
         if len(indices) < 2:
             continue
@@ -913,27 +964,78 @@ def _cli_merge_all_turns(
         if len(prompt) > 400_000:
             if not quiet:
                 print(
-                    f"[{n}/{len(eligible)}] turn {turn_idx}: too large "
-                    f"({len(prompt):,} chars), skipped",
+                    f"turn {turn_idx}: too large ({len(prompt):,} chars), skipped",
                     file=sys.stderr,
                 )
             continue
-        if not quiet:
-            print(
-                f"[{n}/{len(eligible)}] turn {turn_idx}: calling {merge_model} "
-                f"on {len(indices)} records (~{tokens:,} tok)…",
-                file=sys.stderr,
+        jobs.append(
+            {
+                "turn_idx": turn_idx,
+                "indices": indices,
+                "prompt": prompt,
+                "tokens": tokens,
+            }
+        )
+
+    if not jobs:
+        return 0
+
+    if not quiet:
+        print(
+            f"Dispatching {len(jobs)} per-turn merge(s) to {merge_model} "
+            f"(concurrency={concurrency})…",
+            file=sys.stderr,
+        )
+
+    lock = threading.Lock()
+    done = 0
+    failed = 0
+
+    def _run(job):
+        return job, _call_llm(job["prompt"], merge_model)
+
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        futures = [pool.submit(_run, j) for j in jobs]
+        for n, fut in enumerate(as_completed(futures), 1):
+            try:
+                job, summary = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                if not quiet:
+                    print(f"[{n}/{len(jobs)}] LLM error: {exc}", file=sys.stderr)
+                continue
+            if not summary or not summary.strip():
+                failed += 1
+                if not quiet:
+                    print(
+                        f"[{n}/{len(jobs)}] turn {job['turn_idx']}: empty response",
+                        file=sys.stderr,
+                    )
+                continue
+            summary_clean = summary.strip()
+            parent = session.records[job["indices"][0]].get("parentUuid")
+            new_merge = Merge(
+                record_indices=job["indices"],
+                summary_text=summary_clean,
+                summary_tokens=count_tokens(summary_clean),
+                new_uuid=str(uuid.uuid4()),
+                insertion_parent_uuid=parent,
+                label=f"merged {len(job['indices'])} records",
             )
-        try:
-            summary = _execute_llm_merge(session, indices, prompt, merge_model)
-            if summary is not None:
+            with lock:
+                session.merges.append(new_merge)
                 done += 1
-        except Exception as exc:  # noqa: BLE001
             if not quiet:
                 print(
-                    f"[{n}/{len(eligible)}] turn {turn_idx}: LLM error ({exc})",
+                    f"[{n}/{len(jobs)}] turn {job['turn_idx']}: ✓ "
+                    f"{job['tokens']:,} tok → {len(summary_clean):,} chars",
                     file=sys.stderr,
                 )
+
+    if not quiet and failed:
+        print(
+            f"Summary: {done} merged, {failed} failed/empty.", file=sys.stderr
+        )
     return done
 
 
@@ -980,6 +1082,7 @@ def main() -> int:
                 merge_model=args.merge_model,
                 min_tokens=args.merge_turns_min_tokens,
                 skip_last=args.merge_turns_skip_last,
+                concurrency=args.merge_turns_concurrency,
                 quiet=args.print_path,
             )
         if not args.print_path:

@@ -64,7 +64,7 @@ TUI 快捷键：
 | `u` | 全部恢复成保留 |
 | `v` | **进入/退出 visual 模式**（vim 风格，选一段连续 block） |
 | `m` | **visual 模式里把所选区间送 LLM 做 merge 摘要** |
-| `M` | **一键对每个 user turn 单独调 LLM 总结**（N turns = N 次串行调用；默认跳过 <1500 tok 的小 turn） |
+| `M` | **一键对每个 user turn 单独调 LLM 总结**（N turns = N 次并发调用，默认 8 并发；默认跳过 <1500 tok 的小 turn 和最近 3 个 turn） |
 | `esc` | 取消 visual 选择；非 visual 模式下相当于 `q` |
 | `s` | 保存到新 jsonl |
 | `q` | 退出（会问是否保存） |
@@ -115,11 +115,15 @@ TUI 快捷键：
     --merge-model gemini
 ```
 
-对**每个**有 ≥ `--merge-turns-min-tokens` (默认 1500) 个 assistant token 的 user turn，独立调一次 LLM 把整 turn 总结成一条 synthetic assistant text record。N 个 eligible turn = N 次串行 LLM 调用，每次大约 10–40s。不进 TUI，不需交互确认；写新 jsonl 并打印路径。可与 `--drop-*` 规则组合：先 drop 明显垃圾再 per-turn merge。已经在之前手动 merge 过的 record 会被跳过，不会重复 merge。
+对**每个**有 ≥ `--merge-turns-min-tokens` (默认 1500) 个 assistant token 的 user turn，独立调一次 LLM 把整 turn 总结成一条 synthetic assistant text record。每个 turn 只送自己那段内容给 LLM —— **turn 之间互相独立**，所以可以并发：`--merge-turns-concurrency N` 控制最大并发数（默认 8）。20 个 eligible turn @ 8 并发 ≈ 30s 走完，比串行的 5-10 分钟快一个数量级。
 
-加 `--merge-turns-skip-last N` 保留最近 N 个 user turn 不动 —— 通常 agent 还在用这几轮的上下文，不要总结。AI 主动 compact 自己历史时建议 `--merge-turns-skip-last 2` 起步。
+不进 TUI，不需交互确认；写新 jsonl 并打印路径。可与 `--drop-*` 规则组合：先 drop 明显垃圾再 per-turn merge。已经在之前手动 merge 过的 record 会被跳过，不会重复 merge。
 
-TUI 里同样的功能绑在 `M` 大写键上，有一次性确认弹窗。
+`--merge-turns-skip-last N`（**默认 3**）保留最近 N 个 user turn 不 merge —— 这几轮通常是 agent 正在用的活上下文，total summary 反而丢必要细节。要 compact 全部就 `--merge-turns-skip-last 0`。
+
+输出的 synthetic record 是一段**完整叙述 agent 干了啥的纯 prose**（不是要点列表）：保留具体文件路径、命令、错误、决策；省略 verbose 工具输出和死路细节。详见 `MERGE_PROMPT_TEMPLATE` in `session_model.py`。
+
+TUI 里同样的功能绑在 `M` 大写键上，有一次性确认弹窗，跑相同的并发实现。
 
 ## 给 agent 自己调用的提示
 

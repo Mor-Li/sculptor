@@ -651,24 +651,21 @@ def render_records_for_llm(session: Session, record_indices: list[int]) -> str:
 
 MERGE_PROMPT_TEMPLATE = """You are compressing a span of a Claude Code conversation that the user wants to summarize to save context tokens.
 
-Produce a SHORT factual summary (3-10 sentences) that preserves:
-- Files/paths/symbols touched, key commands run
-- Decisions made, conclusions reached
-- Errors and whether they were resolved
-- State changes (files created/edited, processes started, configs changed)
+Write a complete narrative of what happened in this span — what the user asked, what the agent reasoned, what tools it tried (including failed attempts and how they were resolved), what conclusions it reached, what files/state changed. The narrative should be self-contained: someone reading ONLY this summary should understand what happened in this section without seeing the originals.
 
-EXCLUDE:
-- Verbose tool output
-- Step-by-step narration ("I then ran...")
-- Thinking blocks
-- Meta-commentary about the summary itself
+Style:
+- Pure prose. One or more paragraphs. No markdown headers, no bullet lists.
+- Keep all load-bearing details verbatim: file paths, function/symbol names, exact commands run, error messages, numeric results, decisions made. Do NOT abstract them away — these are why a future reader of the summary will trust it.
+- Skip raw tool output (long stdout, file dumps, base64). Describe results instead ("ran X, got error Y, fixed by Z").
+- Include dead-ends only when they explain WHY the agent changed approach; otherwise omit.
+- Do not editorialize or meta-comment about the summary itself.
 
-Write in the same language the user used (e.g. respond in 中文 if the user wrote in 中文).
-Output ONLY the summary text, no preamble, no markdown headers.
+Write in the same language the user used (e.g. 中文 if the user wrote in 中文).
+Output ONLY the narrative summary, no preamble.
 
---- Original section ---
+--- Span to summarize ---
 {body}
---- End of section ---
+--- End of span ---
 
 Summary:"""
 
