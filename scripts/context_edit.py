@@ -436,9 +436,11 @@ def _do_merge(
         return "LLM returned empty response; merge aborted."
 
     parent = session.records[indices[0]].get("parentUuid")
+    summary_clean = summary.strip()
     m = Merge(
         record_indices=indices,
-        summary_text=summary.strip(),
+        summary_text=summary_clean,
+        summary_tokens=count_tokens(summary_clean),
         new_uuid=str(uuid.uuid4()),
         insertion_parent_uuid=parent,
         label=f"merged {len(indices)} records",

@@ -110,6 +110,7 @@ class Merge:
 
     record_indices: list[int]
     summary_text: str
+    summary_tokens: int
     new_uuid: str
     insertion_parent_uuid: str | None
     # Optional human label shown in the TUI for the synthetic row.
@@ -144,8 +145,49 @@ class Session:
             for blk in extract_blocks(ri, rec):
                 blocks.append(blk)
 
+        cls._reconcile_thinking_tokens(records, blocks)
         turns = group_into_turns(blocks)
         return cls(path=path, records=records, blocks=blocks, turns=turns)
+
+    @staticmethod
+    def _reconcile_thinking_tokens(
+        records: list[dict[str, Any]], blocks: list[Block]
+    ) -> None:
+        """A single API call's `usage.output_tokens` covers all generated
+        content (thinking + text + tool_use). Claude Code splits each content
+        block into its own record but copies the same `output_tokens` onto
+        every sibling. To attribute the cost: for each request (records
+        sharing the same `message.id`), subtract the verbatim sibling
+        tiktokens (text and tool_use args are stored as-is locally) and split
+        the remainder across the thinking blocks, whose local text is a
+        sanitized placeholder.
+        """
+        groups: dict[str, list[Block]] = {}
+        for blk in blocks:
+            rec = records[blk.record_index]
+            if rec.get("type") != "assistant":
+                continue
+            msg_id = (rec.get("message") or {}).get("id")
+            if not msg_id:
+                continue
+            groups.setdefault(msg_id, []).append(blk)
+
+        for group_blocks in groups.values():
+            thinking_blocks = [b for b in group_blocks if b.kind == BLOCK_THINKING]
+            if not thinking_blocks:
+                continue
+            rec = records[group_blocks[0].record_index]
+            output_tokens = int(
+                ((rec.get("message") or {}).get("usage") or {}).get("output_tokens") or 0
+            )
+            non_thinking_tokens = sum(
+                b.size_tokens for b in group_blocks if b.kind != BLOCK_THINKING
+            )
+            per_thinking = max(0, output_tokens - non_thinking_tokens) // len(
+                thinking_blocks
+            )
+            for b in thinking_blocks:
+                b.size_tokens = per_thinking
 
     def stats(self) -> dict[str, int]:
         # Records swallowed by a merge no longer count toward kept_chars.
@@ -154,7 +196,7 @@ class Session:
             merged_record_ids.update(m.record_indices)
 
         merged_summary_chars = sum(len(m.summary_text) for m in self.merges)
-        merged_summary_tokens = sum(count_tokens(m.summary_text) for m in self.merges)
+        merged_summary_tokens = sum(m.summary_tokens for m in self.merges)
 
         kept = []
         hidden = []
@@ -223,35 +265,6 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
         (b.get("type") in ("text",)) for b in content
     )
 
-    # For assistant records, the Anthropic API returns the real generation
-    # cost in message.usage.output_tokens. Use it for thinking blocks because
-    # the local `thinking` text field is a sanitized empty/short placeholder —
-    # the real reasoning lives server-side, keyed by `signature`. Everything
-    # else (assistant text, tool_use args) is stored verbatim locally, so
-    # tiktoken on local content is accurate for those.
-    thinking_token_budget = 0
-    if rtype == "assistant":
-        usage = msg.get("usage") or {}
-        output_tokens = int(usage.get("output_tokens") or 0)
-        if output_tokens:
-            non_thinking_local_tokens = 0
-            thinking_count = 0
-            for b in content:
-                if not isinstance(b, dict):
-                    continue
-                bt = b.get("type")
-                if bt == "thinking":
-                    thinking_count += 1
-                elif bt == "text":
-                    non_thinking_local_tokens += count_tokens(b.get("text", ""))
-                elif bt == "tool_use":
-                    non_thinking_local_tokens += count_tokens(
-                        json.dumps(b.get("input") or {}, ensure_ascii=False)
-                    )
-            if thinking_count:
-                remainder = max(0, output_tokens - non_thinking_local_tokens)
-                thinking_token_budget = remainder // thinking_count
-
     for bi, b in enumerate(content):
         if not isinstance(b, dict):
             continue
@@ -314,10 +327,9 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
             )
         elif rtype == "assistant" and btype == "thinking":
             text = b.get("thinking", "") or b.get("text", "")
-            # Prefer the API-reported output_tokens (apportioned across thinking
-            # blocks in this record); fall back to tiktoken on the local
-            # placeholder text when usage is absent (older records, sidechain).
-            tokens = thinking_token_budget or count_tokens(text)
+            # Local `thinking` text is a placeholder; real token cost is
+            # assigned by Session._reconcile_thinking_tokens after extraction
+            # using the sibling records' shared usage.output_tokens.
             blocks.append(
                 Block(
                     record_index=record_index,
@@ -325,7 +337,7 @@ def extract_blocks(record_index: int, record: dict[str, Any]) -> list[Block]:
                     kind=BLOCK_THINKING,
                     preview=_one_line(text, 200),
                     size_chars=len(text),
-                    size_tokens=tokens,
+                    size_tokens=0,
                     raw=b,
                 )
             )
@@ -726,6 +738,7 @@ def apply_edits_and_save(
             session=session,
             template_record=first_rec,
             summary_text=m.summary_text,
+            summary_tokens=m.summary_tokens,
             new_uuid=m.new_uuid,
             parent_uuid=parent,
             new_sid=new_sid,
@@ -970,6 +983,7 @@ def _build_synthetic_record(
     session: Session,
     template_record: dict[str, Any],
     summary_text: str,
+    summary_tokens: int,
     new_uuid: str,
     parent_uuid: str | None,
     new_sid: str,
@@ -1011,6 +1025,7 @@ def _build_synthetic_record(
             "content": [{"type": "text", "text": body}],
             "stop_reason": "end_turn",
             "stop_sequence": None,
+            "usage": {"output_tokens": summary_tokens},
         },
     }
 
