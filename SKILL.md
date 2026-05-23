@@ -51,23 +51,28 @@ TUI 快捷键：
 
 | key | 作用 |
 |---|---|
+| key | 作用 |
+|---|---|
 | `↑/↓` 或 `j/k` | 移动光标 |
 | `PgUp/PgDn` `Home/End` | 翻页 / 跳首尾 |
 | `space` | 切换当前 block 的勾选（visual 模式下禁用） |
-| `enter` | 折叠/展开当前 user turn |
+| `enter` | turn header 上：折叠/展开；非 header 上：弹浮层看完整内容（与 `p` 等价） |
+| `p` | 在浮层里看当前 block 的完整内容 |
 | `a` | 一键切换所有 tool_results |
 | `A` | 一键切换所有 thinking |
 | `T` | 一键切换所有 assistant text |
 | `u` | 全部恢复成保留 |
-| `p` | 在浮层里看当前 block 的完整内容 |
 | `v` | **进入/退出 visual 模式**（vim 风格，选一段连续 block） |
-| `m` | **在 visual 模式里把所选区间送 LLM 做 merge 摘要** |
+| `m` | **visual 模式里把所选区间送 LLM 做 merge 摘要** |
+| `M` | **一键对每个 user turn 单独调 LLM 总结**（N turns = N 次串行调用；默认跳过 <1500 tok 的小 turn） |
 | `esc` | 取消 visual 选择；非 visual 模式下相当于 `q` |
 | `s` | 保存到新 jsonl |
 | `q` | 退出（会问是否保存） |
 | `?` | 帮助浮层 |
 
-保存后终端会打印新文件路径和 `claude --resume` 的命令。
+保存后终端会打印新文件路径和带 sid 的 `claude --resume <new-sid>` 命令，直接复制即可恢复。
+
+行尾标签显示 `Nt`（token 数，via tiktoken cl100k_base；assistant blocks 直接取 `message.usage.output_tokens`），不是字符数。
 
 ### Merge 工作流（visual 模式 + LLM 摘要）
 
@@ -101,6 +106,18 @@ TUI 快捷键：
 - `--drop-failed-bash`：tool_result 里看起来像报错的（"error" / "command not found" / "no such file"）
 
 加 `--dry-run` 只算账不写文件；加 `--print-path` 只在 stdout 输出新文件路径，方便脚本拼装。
+
+### 自动 per-turn merge（CLI，给 agent 调用最方便）
+
+```bash
+~/.claude/skills/sculptor/scripts/ce --merge-turns \
+    --merge-turns-min-tokens 1500 \
+    --merge-model gemini
+```
+
+对**每个**有 ≥ `--merge-turns-min-tokens` (默认 1500) 个 assistant token 的 user turn，独立调一次 LLM 把整 turn 总结成一条 synthetic assistant text record。N 个 eligible turn = N 次串行 LLM 调用，每次大约 10–40s。不进 TUI，不需交互确认；写新 jsonl 并打印路径。可与 `--drop-*` 规则组合：先 drop 明显垃圾再 per-turn merge。已经在之前手动 merge 过的 record 会被跳过，不会重复 merge。
+
+TUI 里同样的功能绑在 `M` 大写键上，有一次性确认弹窗。
 
 ## 给 agent 自己调用的提示
 

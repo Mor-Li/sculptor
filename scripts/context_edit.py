@@ -136,7 +136,7 @@ def run_tui(session: Session, merge_model: str = "gemini") -> bool:
         cursor = 0
         scroll = 0
         visual_anchor: int | None = None
-        message = "↑↓ move · space toggle · enter fold · v visual · m merge · a all results · A thinking · ? help · s save · q quit"
+        message = "↑↓ move · space toggle · enter fold/preview · v visual · m merge · M auto-merge-turns · a all results · A thinking · ? help · s save · q quit"
 
         while True:
             rows = _build_visible_rows(session)
@@ -201,8 +201,8 @@ def run_tui(session: Session, merge_model: str = "gemini") -> bool:
                 _safe_addstr(stdscr, h - 2, 0, message, w)
 
             help_line = (
-                "  space:toggle  v:visual  m:merge  a:all results  A:thinking"
-                "  p:preview  s:save  q:quit"
+                "  space:toggle  v:visual  m:merge  M:merge-all-turns  "
+                "a:all results  A:thinking  p:preview  s:save  q:quit"
             )
             _safe_addstr(stdscr, h - 1, 0, help_line.ljust(w), w, curses.A_DIM)
 
@@ -247,6 +247,8 @@ def run_tui(session: Session, merge_model: str = "gemini") -> bool:
                     if r["kind"] == "turn_header":
                         t = r["turn"]
                         t.expanded = not t.expanded
+                    else:
+                        _preview_block(stdscr, rows, cursor)
             elif k == ord("v"):
                 if visual_anchor is None:
                     visual_anchor = cursor
@@ -269,6 +271,13 @@ def run_tui(session: Session, merge_model: str = "gemini") -> bool:
                         message = "Merge cancelled."
                     except Exception as exc:  # noqa: BLE001
                         message = f"Merge failed: {exc}"
+            elif k == ord("M"):
+                try:
+                    message = _do_merge_all_turns(
+                        stdscr, session, state["merge_model"]
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    message = f"Merge-all failed: {exc}"
             elif k == ord("a"):
                 _bulk_toggle(session, BLOCK_TOOL_RESULT)
             elif k == ord("A"):
@@ -390,8 +399,7 @@ def _do_merge(
     record_indices: set[int],
     merge_model: str,
 ) -> str:
-    """Run validation + LLM call + add Merge to session. Returns a status
-    string for the TUI."""
+    """Validate + confirm + LLM-merge a user-selected range. Returns status."""
     if not record_indices:
         return "Empty selection; nothing to merge."
 
@@ -410,48 +418,157 @@ def _do_merge(
             f"Try a smaller range."
         )
 
-    # Confirm with user
     confirm_msg = (
-        f"Merge {len(indices)} records ({count_tokens(prompt):,} prompt tokens) "
-        f"via {merge_model}? [y/N] "
+        f"Merge {len(indices)} records (~{count_tokens(prompt):,} tokens → "
+        f"{merge_model})? [y/N] "
     )
     if not _confirm(stdscr, confirm_msg):
         raise _UserAbort()
 
-    # Show progress; refresh so user sees it.
-    h, w = stdscr.getmaxyx()
-    _safe_addstr(
+    _flash_status(
         stdscr,
-        h - 2,
-        0,
         f"Calling LLM ({merge_model}) on {len(indices)} records "
-        f"({len(prompt):,} chars)…".ljust(w),
-        w,
-        curses.A_REVERSE,
+        f"({len(prompt):,} chars)…",
     )
-    stdscr.refresh()
 
-    summary = _call_llm(prompt, merge_model)
-    if not summary or not summary.strip():
+    summary = _execute_llm_merge(session, indices, prompt, merge_model)
+    if summary is None:
         return "LLM returned empty response; merge aborted."
-
-    parent = session.records[indices[0]].get("parentUuid")
-    summary_clean = summary.strip()
-    m = Merge(
-        record_indices=indices,
-        summary_text=summary_clean,
-        summary_tokens=count_tokens(summary_clean),
-        new_uuid=str(uuid.uuid4()),
-        insertion_parent_uuid=parent,
-        label=f"merged {len(indices)} records",
-    )
-    session.merges.append(m)
 
     warn_suffix = f" ({'; '.join(warnings)})" if warnings else ""
     return (
         f"✓ merged {len(indices)} records into {len(summary):,}-char "
         f"summary{warn_suffix}"
     )
+
+
+def _execute_llm_merge(
+    session: Session,
+    indices: list[int],
+    prompt: str,
+    merge_model: str,
+) -> str | None:
+    """Call the LLM and append the resulting Merge to session. Returns the
+    raw summary text, or None if the LLM returned nothing."""
+    summary = _call_llm(prompt, merge_model)
+    if not summary or not summary.strip():
+        return None
+    summary_clean = summary.strip()
+    parent = session.records[indices[0]].get("parentUuid")
+    session.merges.append(
+        Merge(
+            record_indices=indices,
+            summary_text=summary_clean,
+            summary_tokens=count_tokens(summary_clean),
+            new_uuid=str(uuid.uuid4()),
+            insertion_parent_uuid=parent,
+            label=f"merged {len(indices)} records",
+        )
+    )
+    return summary_clean
+
+
+def _flash_status(stdscr, text: str) -> None:
+    h, w = stdscr.getmaxyx()
+    _safe_addstr(stdscr, h - 2, 0, text.ljust(w), w, curses.A_REVERSE)
+    stdscr.refresh()
+
+
+def _eligible_turns_for_auto_merge(
+    session: Session, min_tokens: int
+) -> list[tuple[int, list[int], int]]:
+    """For each turn that contains at least 2 mergeable assistant/tool_result
+    records totaling >= min_tokens, return (turn_index, record_indices, tokens).
+    Skips records that are already part of a saved merge."""
+    already_merged: set[int] = set()
+    for m in session.merges:
+        already_merged.update(m.record_indices)
+
+    eligible: list[tuple[int, list[int], int]] = []
+    for turn in session.turns:
+        if turn.user_block is None:
+            continue
+        rec_indices: list[int] = []
+        rec_tokens = 0
+        seen: set[int] = set()
+        for b in turn.blocks:
+            ri = b.record_index
+            if ri in already_merged or ri in seen:
+                continue
+            seen.add(ri)
+            rec_indices.append(ri)
+            rec_tokens += sum(
+                bb.size_tokens for bb in turn.blocks if bb.record_index == ri
+            )
+        if len(rec_indices) >= 2 and rec_tokens >= min_tokens:
+            eligible.append((turn.index, rec_indices, rec_tokens))
+    return eligible
+
+
+def _do_merge_all_turns(
+    stdscr,
+    session: Session,
+    merge_model: str,
+    min_tokens: int = 1500,
+) -> str:
+    """One LLM call per eligible turn. Skips turns smaller than min_tokens
+    and turns whose records are already inside an existing merge."""
+    eligible = _eligible_turns_for_auto_merge(session, min_tokens)
+    if not eligible:
+        return (
+            f"No eligible turns (need ≥2 records and ≥{min_tokens:,} tokens of "
+            f"assistant content per turn)."
+        )
+
+    total_tokens = sum(t[2] for t in eligible)
+    confirm_msg = (
+        f"Merge {len(eligible)} turn(s) (~{total_tokens:,} tokens total → "
+        f"{len(eligible)}× {merge_model} calls)? [y/N] "
+    )
+    if not _confirm(stdscr, confirm_msg):
+        return "Merge-all cancelled."
+
+    done = 0
+    failed = 0
+    for n, (turn_idx, rec_indices, tokens) in enumerate(eligible, 1):
+        try:
+            indices, _warnings = resolve_merge_range(session, set(rec_indices))
+        except ValueError as exc:
+            failed += 1
+            _flash_status(
+                stdscr, f"turn {turn_idx}: skipped ({exc}) [{n}/{len(eligible)}]"
+            )
+            continue
+        if len(indices) < 2:
+            continue
+        prompt = build_merge_prompt(session, indices)
+        if len(prompt) > 400_000:
+            failed += 1
+            _flash_status(
+                stdscr,
+                f"turn {turn_idx}: too large ({len(prompt):,} chars), skipped "
+                f"[{n}/{len(eligible)}]",
+            )
+            continue
+        _flash_status(
+            stdscr,
+            f"[{n}/{len(eligible)}] turn {turn_idx}: calling {merge_model} on "
+            f"{len(indices)} records (~{tokens:,} tok)…",
+        )
+        try:
+            summary = _execute_llm_merge(session, indices, prompt, merge_model)
+            if summary is None:
+                failed += 1
+            else:
+                done += 1
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            _flash_status(
+                stdscr,
+                f"turn {turn_idx}: LLM error ({exc}) [{n}/{len(eligible)}]",
+            )
+
+    return f"✓ merged {done} turns" + (f", {failed} failed/skipped" if failed else "")
 
 
 def _call_llm(prompt: str, model: str) -> str:
@@ -500,7 +617,7 @@ def _draw_row(
     else:
         mark = "[ ]"
     kind_label = KIND_LABEL.get(blk.kind, blk.kind[:6]).ljust(6)
-    size = f"{blk.size_chars:>6}c"
+    size = f"{blk.size_tokens:>6}t"
     preview = blk.preview or ""
 
     indent = "" if is_header else "  "
@@ -573,7 +690,7 @@ def _preview_block(stdscr, rows: list[dict], cursor: int) -> None:
     pad_h = max(50, len(text.splitlines()) + 4)
     pad_w = max(w, 200)
     pad = curses.newpad(pad_h, pad_w)
-    pad.addstr(0, 0, f"=== {blk.kind} · {blk.size_chars} chars · {blk.size_tokens} tok ===\n\n")
+    pad.addstr(0, 0, f"=== {blk.kind} · {blk.size_tokens} tok · {blk.size_chars} chars ===\n\n")
     try:
         pad.addstr(text[: pad_h * pad_w - 200])
     except curses.error:
@@ -652,10 +769,13 @@ def _show_help(stdscr) -> None:
         "  v                start/cancel VISUAL selection at cursor",
         "  ↑/↓ (in visual)  extend selection",
         "  m (in visual)    merge selected records → LLM summary",
+        "  M                auto-merge every eligible user turn (one LLM call",
+        "                   per turn; min 1500 tokens of assistant content)",
         "  esc              cancel visual mode",
         "",
         "View:",
-        "  enter            expand/collapse the current user turn",
+        "  enter on header  expand/collapse the current user turn",
+        "  enter on block   preview full content (also bound to p)",
         "  p                preview full content of current block (or merged Σ)",
         "  ?                this help",
         "",
@@ -710,6 +830,20 @@ def parse_args() -> argparse.Namespace:
         help="Auto: hide tool_results that look like errors.",
     )
     p.add_argument(
+        "--merge-turns",
+        action="store_true",
+        help="Auto: for every user turn with assistant content above "
+        "--merge-turns-min-tokens, send the whole turn to the merge LLM and "
+        "replace it with one synthetic summary record. Implies --auto.",
+    )
+    p.add_argument(
+        "--merge-turns-min-tokens",
+        type=int,
+        default=1500,
+        help="Minimum token count of a turn's assistant content for "
+        "--merge-turns to consider it (default: 1500).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Don't write anything; just print what would change.",
@@ -727,6 +861,61 @@ def parse_args() -> argparse.Namespace:
         "gemini, gpt, or a raw model name.",
     )
     return p.parse_args()
+
+
+def _cli_merge_all_turns(
+    session: Session, *, merge_model: str, min_tokens: int, quiet: bool
+) -> int:
+    """Non-interactive per-turn auto merge. Returns number of merges added."""
+    eligible = _eligible_turns_for_auto_merge(session, min_tokens)
+    if not eligible:
+        if not quiet:
+            print(
+                f"No eligible turns for --merge-turns (need ≥2 records and "
+                f"≥{min_tokens:,} tokens of assistant content).",
+                file=sys.stderr,
+            )
+        return 0
+
+    done = 0
+    for n, (turn_idx, rec_indices, tokens) in enumerate(eligible, 1):
+        try:
+            indices, _w = resolve_merge_range(session, set(rec_indices))
+        except ValueError as exc:
+            if not quiet:
+                print(
+                    f"[{n}/{len(eligible)}] turn {turn_idx}: skipped ({exc})",
+                    file=sys.stderr,
+                )
+            continue
+        if len(indices) < 2:
+            continue
+        prompt = build_merge_prompt(session, indices)
+        if len(prompt) > 400_000:
+            if not quiet:
+                print(
+                    f"[{n}/{len(eligible)}] turn {turn_idx}: too large "
+                    f"({len(prompt):,} chars), skipped",
+                    file=sys.stderr,
+                )
+            continue
+        if not quiet:
+            print(
+                f"[{n}/{len(eligible)}] turn {turn_idx}: calling {merge_model} "
+                f"on {len(indices)} records (~{tokens:,} tok)…",
+                file=sys.stderr,
+            )
+        try:
+            summary = _execute_llm_merge(session, indices, prompt, merge_model)
+            if summary is not None:
+                done += 1
+        except Exception as exc:  # noqa: BLE001
+            if not quiet:
+                print(
+                    f"[{n}/{len(eligible)}] turn {turn_idx}: LLM error ({exc})",
+                    file=sys.stderr,
+                )
+    return done
 
 
 def main() -> int:
@@ -758,16 +947,27 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if args.auto:
+    if args.auto or args.merge_turns:
         n = auto_mark(
             session,
             drop_tool_results_larger_than=args.drop_tool_results_larger_than,
             drop_thinking=args.drop_thinking,
             drop_failed_bash=args.drop_failed_bash,
         )
+        merged_count = 0
+        if args.merge_turns:
+            merged_count = _cli_merge_all_turns(
+                session,
+                merge_model=args.merge_model,
+                min_tokens=args.merge_turns_min_tokens,
+                quiet=args.print_path,
+            )
         if not args.print_path:
-            print(f"Auto-marked {n} blocks for hide.", file=sys.stderr)
-        do_save = n > 0
+            print(
+                f"Auto-marked {n} blocks for hide; merged {merged_count} turns.",
+                file=sys.stderr,
+            )
+        do_save = (n > 0) or (merged_count > 0)
     else:
         do_save = run_tui(session, merge_model=args.merge_model)
 
@@ -789,8 +989,10 @@ def main() -> int:
     else:
         st = result["stats"]
         resume_cwd = _project_cwd_from_session(session)
+        new_sid = Path(result["out_jsonl"]).stem
+        resume_cmd = f"claude --resume {new_sid}"
         resume_hint = (
-            f"cd {resume_cwd} && claude --resume" if resume_cwd else "claude --resume"
+            f"cd {resume_cwd} && {resume_cmd}" if resume_cwd else resume_cmd
         )
         print(
             f"\n✓ wrote {result['out_jsonl']}\n"
