@@ -64,7 +64,7 @@ TUI 快捷键：
 | `u` | 全部恢复成保留 |
 | `v` | **进入/退出 visual 模式**（vim 风格，选一段连续 block） |
 | `m` | **visual 模式里把所选区间送 LLM 做 merge 摘要** |
-| `M` | **一键对每个 user turn 单独调 LLM 总结**（N turns = N 次并发调用，默认 8 并发；默认跳过 <1500 tok 的小 turn 和最近 3 个 turn） |
+| `M` | **一键对每个 user turn 单独调 LLM 总结**（N turns = N 次并发调用，默认 32 并发；默认跳过 <1500 tok 的小 turn 和最近 3 个 turn） |
 | `esc` | 取消 visual 选择；非 visual 模式下相当于 `q` |
 | `s` | 保存到新 jsonl |
 | `q` | 退出（会问是否保存） |
@@ -115,7 +115,7 @@ TUI 快捷键：
     --merge-model gemini
 ```
 
-对**每个**有 ≥ `--merge-turns-min-tokens` (默认 1500) 个 assistant token 的 user turn，独立调一次 LLM 把整 turn 总结成一条 synthetic assistant text record。每个 turn 只送自己那段内容给 LLM —— **turn 之间互相独立**，所以可以并发：`--merge-turns-concurrency N` 控制最大并发数（默认 8）。20 个 eligible turn @ 8 并发 ≈ 30s 走完，比串行的 5-10 分钟快一个数量级。
+对**每个**有 ≥ `--merge-turns-min-tokens` (默认 1500) 个 assistant token 的 user turn，独立调一次 LLM 把整 turn 总结成一条 synthetic assistant text record。每个 turn 只送自己那段内容给 LLM —— **turn 之间互相独立**，所以可以并发：`--merge-turns-concurrency N` 控制最大并发数（默认 32）。32 个 eligible turn @ 32 并发 ≈ 一次 LLM call 的 wall time（10-40s），比串行快一两个量级。
 
 不进 TUI，不需交互确认；写新 jsonl 并打印路径。可与 `--drop-*` 规则组合：先 drop 明显垃圾再 per-turn merge。已经在之前手动 merge 过的 record 会被跳过，不会重复 merge。
 

@@ -514,7 +514,7 @@ def _do_merge_all_turns(
     merge_model: str,
     min_tokens: int = 1500,
     skip_last: int = 3,
-    concurrency: int = 8,
+    concurrency: int = 32,
 ) -> str:
     """Parallel per-turn merge. Each turn is sent independently to the LLM
     in its own thread; results stream back via `as_completed`. Skips turns
@@ -895,10 +895,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--merge-turns-concurrency",
         type=int,
-        default=8,
+        default=32,
         help="Maximum concurrent LLM calls when --merge-turns runs. Each turn "
         "is independent (we send only that turn's content), so they can run "
-        "in parallel. Default: 8.",
+        "in parallel. Default: 32.",
     )
     p.add_argument(
         "--dry-run",
