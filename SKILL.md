@@ -1,6 +1,6 @@
 ---
 name: sculptor
-description: Active context management for Claude Code sessions. Translate session jsonl into editable markdown, let the agent read/edit (delete = hide, rewrite = merge, leave alone = keep), then translate back to a new jsonl that `claude --resume` picks up. Use when the user says "context is filling up / compact the conversation / trim history / let the agent organize the context" or when you proactively detect context pressure. Companion to the ICLR 2026 paper "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management" (arXiv:2508.04664).
+description: 'Active context management for Claude Code sessions. Translate session jsonl into editable markdown, let the agent read/edit (delete = hide, rewrite = merge, leave alone = keep), then translate back to a new jsonl that `claude --resume` picks up. Use when the user says "context is filling up / compact the conversation / trim history / let the agent organize the context" or when you proactively detect context pressure. Companion to the ICLR 2026 paper "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management" (arXiv:2508.04664).'
 ---
 
 # sculptor

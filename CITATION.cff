@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use this software or the underlying ideas in your research, please cite the Sculptor paper."
+title: "sculptor: a Claude Code skill for active context management"
+authors:
+  - family-names: Li
+    given-names: Mo
+repository-code: "https://github.com/Mor-Li/sculptor"
+license: MIT
+preferred-citation:
+  type: conference-paper
+  title: "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management"
+  authors:
+    - family-names: Li
+      given-names: Mo
+    - family-names: Xu
+      given-names: L.H.
+    - family-names: Tan
+      given-names: Qitai
+    - family-names: Ma
+      given-names: Long
+    - family-names: Sung
+      given-names: Flood
+    - family-names: Cao
+      given-names: Ting
+    - family-names: Liu
+      given-names: Yunxin
+  collection-title: "The Fourteenth International Conference on Learning Representations (ICLR 2026)"
+  year: 2026
+  url: "https://openreview.net/forum?id=HPeiH7da0Z"
+  identifiers:
+    - type: other
+      value: "arXiv:2508.04664"
+      description: "arXiv preprint"
