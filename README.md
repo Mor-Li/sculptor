@@ -3,6 +3,8 @@
 > A practical context-editing tool for [Claude Code](https://claude.com/claude-code).
 > Translate a session jsonl into editable markdown → let an agent freely edit (delete = hide, rewrite = merge, leave alone = keep) → translate back to a new jsonl that `claude --resume` picks up.
 
+> 中文版: [README.zh-CN.md](./README.zh-CN.md)
+
 Drop this repo under `~/.claude/skills/sculptor/`. Invoke as `/sculptor`, or run `s1` / `s2` directly.
 
 ```bash
@@ -95,7 +97,8 @@ See `SKILL.md` "❌ 反模式" section for full details and the Anthropic docs q
 
 - [Sculptor paper (arXiv)](https://arxiv.org/abs/2508.04664)
 - [Claude Code Skills docs](https://docs.claude.com/en/docs/claude-code/skills)
-- [SKILL.md](./SKILL.md) — full workflow & pattern guide (中文)
+- [SKILL.md](./SKILL.md) — full workflow & pattern guide
+- [README.zh-CN.md](./README.zh-CN.md) — 中文版 README
 - [docs/jsonl-anatomy.md](./docs/jsonl-anatomy.md) — deep dive into Claude Code session jsonl format
 
 ---

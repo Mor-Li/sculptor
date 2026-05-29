@@ -1,34 +1,34 @@
 ---
 name: sculptor
-description: 主动管理 Claude Code 对话上下文。把 session jsonl 翻成可编辑的 markdown,agent 直接 read/edit(删段=hide、改段=merge、不动=keep),再翻回新的 jsonl 让 `claude --resume` 接着干。当用户说"上下文快满了 / 精简对话 / 帮我裁 history / 让 agent 自己整理上下文"或主动感知到 context pressure 时使用。配套 ICLR 2026 论文 "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management" (arXiv:2508.04664)。
+description: Active context management for Claude Code sessions. Translate session jsonl into editable markdown, let the agent read/edit (delete = hide, rewrite = merge, leave alone = keep), then translate back to a new jsonl that `claude --resume` picks up. Use when the user says "context is filling up / compact the conversation / trim history / let the agent organize the context" or when you proactively detect context pressure. Companion to the ICLR 2026 paper "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management" (arXiv:2508.04664).
 ---
 
 # sculptor
 
-两个脚本就够了。
+Two scripts is all you need.
 
 ```bash
-~/.claude/skills/sculptor/scripts/s1.py <session.jsonl>   # 翻成 edit.md
-# agent 直接 read/edit edit.md
-~/.claude/skills/sculptor/scripts/s2.py <edit.md>         # 翻回新 jsonl
-claude --resume <new-sid>                              # 接着干
+~/.claude/skills/sculptor/scripts/s1.py <session.jsonl>   # → edit.md
+# agent reads & edits edit.md directly
+~/.claude/skills/sculptor/scripts/s2.py <edit.md>         # → new jsonl
+claude --resume <new-sid>                                  # continue from there
 ```
 
-原 jsonl 永远不动。新 jsonl 落在原 jsonl 同目录,`claude --resume` 自动扫到。
+The original jsonl is never modified. The new jsonl lands in the same directory as the original and `claude --resume` picks it up automatically.
 
-## 中间 markdown 长什么样
+## What the intermediate markdown looks like
 
-每条 record 一段,heading 形如 `### turn N · kind · b00NN · Ntokens · meta`:
+Each record becomes a section, headed like `### turn N · kind · b00NN · Ntokens · meta`:
 
 ```markdown
 ### turn 1 · user · b0001 · 925t
-<user 原话>
+<user text>
 
 ### turn 1 · think · b0002 · 4340t
-<thinking 内容,可能是空 + signature 说明>
+<thinking content, may be empty + signature note>
 
 ### turn 1 · asst · b0003 · 1022t
-<assistant 文本>
+<assistant text>
 
 ### turn 3 · call+result · b0042+b0043 · 66+58t · Bash
 **call** (b0042):
@@ -39,58 +39,59 @@ $ <command>
 <output>
 ```
 
-`b00NN` 是 anchor,后处理用它定位原 jsonl 的 record。`tool_use` 跟对应的 `tool_result` 打包成同一段,删一起删避免配对孤儿。
+`b00NN` is the anchor; the postprocessor uses it to locate the original jsonl record. A `tool_use` and its corresponding `tool_result` are packed into the same section — delete them together to avoid pairing orphans.
 
-## 三种意图
+## Three intents
 
-| agent 做的事 | 后处理结果 |
+| What the agent does | Postprocess result |
 |---|---|
-| 删整段 | hide(对应 record 被 stub/drop) |
-| 改 body 内容 | merge replacement(替换成 synthetic record) |
-| 不动 | keep 原样 |
+| Delete the whole section | hide (the record is stubbed/dropped) |
+| Edit the body content | merge replacement (replaced with a synthetic record) |
+| Leave alone | keep as-is |
 
-只有一条约束:**不要改 heading 里的 `b00NN` id**。
+Only one constraint: **don't change the `b00NN` id in the heading**.
 
-## 哪些段该删 / 该改
+## Which sections to delete / rewrite
 
-参考真实 session 实测有效的 pattern(按出现频率):
+Patterns that have proven effective on real sessions (sorted by frequency):
 
-- **大段 tool_result 转述**:agent 已经在下一条 think/asst 里转述了核心结论,verbatim 内容可删
-- **同文件多次 Read / Edit 循环**:留最后一次 Read(反映当前 disk 状态),中间过期快照删掉
-- **boilerplate 回执**:`Task #N created successfully` / `The file X has been updated successfully` / `Updated task #N status` 这种固定模板,内容零信息
-- **失败 → 重试链**:把"失败→诊断→重试→成功"改写成一句"agent 意识到 X 因 Y 失败,改用 Z 成功"
-- **整个失败实验段**:已被后续转述、不再被引用的探索 turn,整段直接删除或保留可能对未来有用的summary即可。 
-- **SendMessage 
-**:multi-agent session 里 SendMessage 的 result 是 call.content 完整回声,删 result 保 call
-- **超大单 result**:agent 拉了整个飞书文档/git log/数据集 dump,但只用了头尾几行 → 整段删,disk/远端有原件
+- **Large tool_result already paraphrased**: the agent has already summarized the key takeaway in the next think/asst block — the verbatim content can be deleted.
+- **Repeated Read / Edit on the same file**: keep only the last Read (reflects current disk state) and delete the stale intermediate snapshots.
+- **Boilerplate receipts**: fixed templates like `Task #N created successfully` / `The file X has been updated successfully` / `Updated task #N status` carry zero information.
+- **Failure → retry chain**: rewrite "fail → diagnose → retry → success" as a single line: "agent realized X failed because of Y, used Z instead and it worked."
+- **Failed-experiment turns**: turns that already got recapped by later turns and are no longer referenced — delete the whole turn, or keep a one-line summary that future agents might still need.
+- **SendMessage echo**: in multi-agent sessions, the SendMessage tool_result is usually a complete echo of `call.content` — delete the result, keep the call.
+- **Oversized single result**: the agent fetched an entire Feishu doc / git log / dataset dump but only used the head/tail — delete the whole result; the original is on disk or a remote source.
+- **Large image attachments (originals on disk)**: PNG screenshots and generated images get base64-embedded into the session (megabytes each). If the corresponding `<file_path>` still exists on disk (`output/*.png`, `screenshots/*.png`, etc.), delete the image content and keep only the file_path reference. The agent can `Read` it back on resume. **Important**: this also unblocks the Anthropic API's "image dimension > 2000px" and "many-image request" limits — long-running sessions accumulate dozens of large PNGs and eventually can't resume; pruning redundant images is the only way out.
+- **Obviously irrelevant chunks in long-context tests (use with caution)** ⚠️: for needle-in-haystack benchmarks where the user input is a large context plus a specific question, most of the context is irrelevant. You *can* delete the obviously irrelevant parts (disclaimers, repeated section headers, boilerplate). But be **conservative**: the needle may hide in "looks irrelevant" places. **Delete one small chunk at a time and verify the resumed answer is still correct** — never batch-hide large sections, or you might delete the needle along with the hay.
 
-口诀:**删了之后 server 端 resume 还能继续干同一件事，而且理论上删除的信息对做好这件事已经无明显受益吗?能 → 删**。
+Rule of thumb: **after deleting this, can the server-side resume still finish the same task, and was the deleted info actually contributing to that outcome? If yes to both → delete it.**
 
-## 注意:不要批量删 thinking signature
+## ⚠️ Anti-pattern: do NOT batch-delete thinking signatures
 
-**重要更正**:之前曾把"空 thinking 块(signature-only)整批 hide"标为 killer pattern,**这是错的**。
+**Important correction**: earlier versions of this guide labeled "batch-hide empty thinking blocks (signature-only)" as a killer pattern. **That was wrong**.
 
-事实(Anthropic 官方文档):
+Fact (from the Anthropic official docs):
 
 > "The signature field is **not just a verification hash**—it contains the encrypted full thinking content that the server can decode."
 >
 > "The server **decrypts the signature** to reconstruct the original thinking for prompt construction."
 
-也就是说 jsonl 里 thinking 字段为空只是 client 端 `display: "omitted"` 模式不存正文,**signature 本身就是加密的完整 thinking 内容**,server 端会解码出来继续推理。删了 signature = server 端失去那段原推理的 condition。
+In other words, an empty `thinking` field in the jsonl is just the client's `display: "omitted"` mode hiding the prose — **the `signature` itself carries the full encrypted thinking content** that the server decodes back for reasoning. Deleting the signature = stripping the server-side reasoning condition.
 
-实测把删过空 thinking 的 jsonl `claude --resume`,API 不拒绝,但 Anthropic 文档明说 "the entire sequence of consecutive thinking blocks must match the outputs generated by the model during the original request",**推理质量可能 silently 下降**。如果删的是 tool-use 紧邻 turn 内的 thinking,API 可能直接 reject。
+Empirically, a jsonl with empty thinking blocks deleted does NOT get rejected by `claude --resume` outright. But the Anthropic docs explicitly say "the entire sequence of consecutive thinking blocks must match the outputs generated by the model during the original request" — **reasoning quality may silently degrade**. And if the deleted thinking sits inside a tool-use turn, the API may reject the request altogether.
 
-**不要做**: 不要删空 thinking,不要删非空 thinking,thinking 段就让它在 markdown 里出现,agent 不动它。
+**Do not do**: don't delete empty thinking blocks, don't delete non-empty thinking blocks, don't rewrite thinking bodies. Leave thinking sections alone in the markdown — the agent should not touch them.
 
-## 边界 & 保证
+## Boundaries & guarantees
 
-- **原 jsonl 永远不动**:s2 写新文件到原目录,带 `<new-sid>.edit-manifest.json` 审计追溯
-- **tool_use ↔ tool_result 配对**:s2 自动 stub/补全保证 API 合法,agent 不用担心
-- **parentUuid 链**:删 record 后自动缝合到最近存活祖先
-- **merged synthetic record**:agent 改写的段会以 `model: "sculptor-synthetic"` 标记,正文带"agent rewrote ..."前缀,事后可审计
-- **compact_boundary 警告** ⚠️:被 `/compact` 过的 session 含 `isCompactSummary: true` 的 user record,这是 compact 边界,不要删
+- **Original jsonl is never modified**: s2 writes a new file to the same directory with a `<new-sid>.edit-manifest.json` audit trail.
+- **tool_use ↔ tool_result pairing**: s2 automatically stubs / re-balances to keep the API valid — the agent doesn't have to worry about it.
+- **parentUuid chain**: after dropping records, the chain auto-stitches to the nearest surviving ancestor.
+- **Merged synthetic records**: sections the agent rewrote land as records tagged with `model: "sculptor-synthetic"`, body prefixed `agent rewrote ...`, for post-hoc audit.
+- **compact_boundary warning** ⚠️: sessions that have been through `/compact` contain a user record with `isCompactSummary: true` — this is the compact boundary, do not delete it.
 
-## 依赖
+## Dependencies
 
 - Python 3.10+
-- `tiktoken`(cl100k_base 真实 token 计数)
+- `tiktoken` (for cl100k_base token counts)
