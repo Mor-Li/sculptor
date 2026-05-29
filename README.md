@@ -1,9 +1,18 @@
 # sculptor
 
 > A practical context-editing tool for [Claude Code](https://claude.com/claude-code).
-> Pick which past tool results, thinking blocks, or assistant turns to keep — or LLM-summarize a span of records into one synthetic message — before `claude --resume`.
+> Translate a session jsonl into editable markdown → let an agent freely edit (delete = hide, rewrite = merge, leave alone = keep) → translate back to a new jsonl that `claude --resume` picks up.
 
-This repo is a Claude Code [skill](https://docs.claude.com/en/docs/claude-code/skills). Drop it under `~/.claude/skills/sculptor/` and the agent (or you, manually) can invoke it as `/sculptor`.
+Drop this repo under `~/.claude/skills/sculptor/`. Invoke as `/sculptor`, or run `s1` / `s2` directly.
+
+```bash
+~/.claude/skills/sculptor/scripts/s1.py <session.jsonl>   # → <session>.edit.md + .sidecar.json
+# agent reads & edits the markdown
+~/.claude/skills/sculptor/scripts/s2.py <session>.edit.md # → new jsonl in the same directory
+claude --resume <new-sid>                              # continue from there
+```
+
+Original jsonl is never modified.
 
 ---
 
@@ -15,13 +24,7 @@ This repo is a **skill-level implementation** and follow-up of our ICLR 2026 pap
 > Mo Li, L.H. Xu, Qitai Tan, Long Ma, Ting Cao, Yunxin Liu. ICLR 2026.
 > [arXiv:2508.04664](https://arxiv.org/abs/2508.04664)
 
-The two share the same core idea — give the agent (or its user) explicit control over what stays in the context window, instead of relying on opaque auto-compaction. This repo is the practical, Claude-Code-shaped version of that idea:
-
-- The paper proposes three families of cognitive tools — *fragmentation*, *summary/hide/restore*, and *precise search*. This skill is a focused implementation of the **summary/hide/restore** family, scoped to the Claude Code session jsonl on disk.
-- The TUI lets a human (or Claude itself in `--auto` mode) inspect and edit the conversation *before* the auto-compact threshold hits. You see exactly what's being removed; no black box.
-- The merge feature uses an external LLM (via a [LiteLLM](https://github.com/BerriAI/litellm)-compatible endpoint) to summarize a contiguous span of records into one synthetic assistant-text record, with parentUuid stitching and tool_use/tool_result re-balancing so `claude --resume` keeps working.
-
-If you build on this for a paper, cite Sculptor:
+Same core idea — give the agent explicit control over what stays in the context window, instead of relying on opaque auto-compaction. The paper proposes three families of cognitive tools (fragmentation / summary-hide-restore / precise search). This repo implements **summary-hide-restore** for Claude Code session jsonl files, in the most direct form possible: agent reads markdown, edits it, we re-encode.
 
 ```bibtex
 @article{li2025sculptor,
@@ -39,57 +42,52 @@ If you build on this for a paper, cite Sculptor:
 
 ```bash
 git clone https://github.com/Mor-Li/sculptor.git ~/.claude/skills/sculptor
-pip install tiktoken openai   # tiktoken for real token counts; openai only if you use the merge feature
-```
-
-Then in any Claude Code session, ask Claude to invoke it (`/sculptor`, "帮我精简对话", "context 快满了"), or run the CLI directly:
-
-```bash
-~/.claude/skills/sculptor/scripts/ce               # picks current cwd's latest session
-~/.claude/skills/sculptor/scripts/ce path/to.jsonl # explicit
+pip install tiktoken
 ```
 
 ---
 
-## What it does
+## What's in the intermediate markdown
 
-Each Claude Code session is a `~/.claude/projects/<encoded-cwd>/<sid>.jsonl`, one record per line. `sculptor` parses it into a tree of checkable blocks:
+Each conversation block becomes a section with a stable `b00NN` anchor:
 
-| block | locked? | what "hide" means |
-|---|---|---|
-| user input | 🔒 | always kept |
-| tool_use | ✓ | `input` replaced with `{"_sculptor_hidden": true, "_original_size": N}`; type/id/name preserved so the tool_use ↔ tool_result pairing stays API-valid |
-| tool_result | ✓ | content replaced with a stub `[hidden by sculptor · original size N chars]` so the tool_use/tool_result pair stays API-valid |
-| assistant text | ✓ | block dropped; record dropped if empty; parentUuid chain auto-stitched |
-| assistant thinking | ✓ | same as text |
+```markdown
+### turn 1 · user · b0001 · 925t
+<user text>
 
-Three editing modes:
+### turn 1 · think · b0002 · 4340t
+<thinking content>
 
-1. **Manual hide (TUI)**: `↑↓` move, `space` toggle, `a` toggle all tool_results, `A` toggle all thinking, `T` toggle all assistant text, `u` un-hide everything, `p` preview, `s` save.
-2. **LLM merge (TUI)**: `v` enter visual mode, `↑↓` extend selection, `m` send the span to a model (default `gemini-3.1-pro-preview` via an OpenAI-compatible endpoint) and replace the span with one synthetic assistant-text record carrying the summary. Auto-balances tool_use/tool_result across the boundary, refuses to cross user inputs.
-3. **Auto (CLI)**: `ce --auto --drop-tool-results-larger-than 5000 --drop-thinking` for a non-interactive heuristic pass.
+### turn 3 · call+result · b0042+b0043 · 66+58t · Bash
+**call** (b0042):
+$ <command>
 
-The original jsonl is **never** modified. Output is a new jsonl in the same directory plus a sidecar `<sid>.edit-manifest.json` audit trail. `claude --resume` auto-detects the new session.
+**result** (b0043):
+<output>
+```
+
+Agent's three intents:
+- **delete the section** → hide the corresponding record(s)
+- **rewrite the body** → replace with a merged synthetic record
+- **leave alone** → keep as-is
+
+Only constraint: don't touch the `b00NN` id in the heading.
 
 ---
 
-## Configuration
+## ⚠️ Important: don't drop thinking signatures
 
-The merge feature shells out to `~/ask_llm.py` (a minimal OpenAI-compatible CLI you provide — anything that takes `--model` and a prompt on stdin and prints the response works) and reads:
+The `thinking` blocks may look empty in the jsonl (`thinking: ""`) but the `signature` field is the **encrypted full thinking content** that the server decodes for round-trip reasoning. Deleting thinking sections silently degrades reasoning quality on resume.
 
-- `LITELLM_BASE_URL` — your endpoint (default: a LiteLLM proxy, set this to your own)
-- `ANTHROPIC_AUTH_TOKEN` — the API token (any name works, follows our internal convention)
-
-Override the model with `--merge-model gpt` or any raw model name. If you don't use merge, you don't need this.
+See `SKILL.md` "❌ 反模式" section for full details and the Anthropic docs quote.
 
 ---
 
 ## Risks
 
-- The hidden tool_result stub string is visible to Claude on resume — the model usually accepts it and doesn't re-do the work, but YMMV.
+- The hidden tool_result stub string is visible to Claude on resume; model usually accepts it.
 - `parentUuid` chain stitching after dropping records relies on Claude Code's tolerance; observed to work but not stress-tested.
-- Thinking blocks' `signature` is a server signature; dropping the whole record drops the signature too. Resume currently works.
-- Merge is not per-record undoable. Pick the range carefully, or just `q` without saving and re-open.
+- For sessions that have been `/compact`-ed, `compact_boundary` records define a hard boundary; don't delete the `isCompactSummary: true` user record across that boundary.
 
 ---
 
@@ -97,7 +95,8 @@ Override the model with `--merge-model gpt` or any raw model name. If you don't 
 
 - [Sculptor paper (arXiv)](https://arxiv.org/abs/2508.04664)
 - [Claude Code Skills docs](https://docs.claude.com/en/docs/claude-code/skills)
-- [SKILL.md](./SKILL.md) — the full keybinding reference & internal docs (中文)
+- [SKILL.md](./SKILL.md) — full workflow & pattern guide (中文)
+- [docs/jsonl-anatomy.md](./docs/jsonl-anatomy.md) — deep dive into Claude Code session jsonl format
 
 ---
 
