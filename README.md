@@ -23,18 +23,19 @@ Original jsonl is never modified.
 This repo is a **skill-level implementation** and follow-up of our ICLR 2026 paper:
 
 > **Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management.**
-> Mo Li, L.H. Xu, Qitai Tan, Long Ma, Ting Cao, Yunxin Liu, Flood Sung. ICLR 2026.
-> [arXiv:2508.04664](https://arxiv.org/abs/2508.04664)
+> Mo Li, L.H. Xu, Qitai Tan, Long Ma, Flood Sung, Ting Cao, Yunxin Liu. ICLR 2026.
+> [OpenReview](https://openreview.net/forum?id=HPeiH7da0Z) · [arXiv:2508.04664](https://arxiv.org/abs/2508.04664)
 
 Same core idea — give the agent explicit control over what stays in the context window, instead of relying on opaque auto-compaction. The paper proposes three families of cognitive tools (fragmentation / summary-hide-restore / precise search). This repo implements **summary-hide-restore** for Claude Code session jsonl files, in the most direct form possible: agent reads markdown, edits it, we re-encode.
 
 ```bibtex
-@article{li2025sculptor,
-  title   = {Sculptor: Empowering {LLMs} with Cognitive Agency via Active Context Management},
-  author  = {Li, Mo and Xu, L.H. and Tan, Qitai and Ma, Long and Cao, Ting and Liu, Yunxin},
-  journal = {arXiv preprint arXiv:2508.04664},
-  year    = {2025},
-  url     = {https://arxiv.org/abs/2508.04664}
+@inproceedings{
+li2026sculptor,
+title={Sculptor: Empowering {LLM}s with Cognitive Agency via Active Context Management},
+author={Mo Li and L.H. Xu and Qitai Tan and Long Ma and Flood Sung and Ting Cao and Yunxin Liu},
+booktitle={The Fourteenth International Conference on Learning Representations},
+year={2026},
+url={https://openreview.net/forum?id=HPeiH7da0Z}
 }
 ```
 
