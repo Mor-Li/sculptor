@@ -55,7 +55,7 @@ def extract_block_text(blk) -> str:
     与 context_edit._block_content_text 行为对齐,但在这里独立实现避免循环依赖。
     特殊处理:
     - Bash tool_use: 还原 `\\n` 为真换行,渲染成 `$ <command>` 形式
-    - 空 thinking(只有 signature)显示零损失提示
+    - 空 thinking(只有 signature)显示警告: signature 是加密的完整推理, 不要删
     """
     raw = blk.raw
     if blk.kind == BLOCK_TOOL_USE and isinstance(raw, dict):
@@ -97,9 +97,13 @@ def extract_block_text(blk) -> str:
         if not body.strip():
             sig = raw.get("signature")
             sig_note = f"signature {len(sig)} chars" if sig else "no signature"
+            # 重要: signature 不是 verification hash, 是加密的完整 thinking 内容,
+            # server 端会解码使用 (Anthropic 官方文档明确说明)。本地看着是空 ≠
+            # server 端看不到。删 signature = 让 server 端失去原推理 condition。
+            # 详见 SKILL.md "❌ 反模式"。
             return (
-                f"[空 thinking block · {sig_note} · server reasoning text "
-                f"未保存到 jsonl —— hide 是零信息损失]"
+                f"[thinking · {sig_note} · ⚠️ signature 是加密的完整推理内容, "
+                f"server 端会解码使用 — **不要删这段**]"
             )
         return body
 
