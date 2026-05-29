@@ -77,11 +77,15 @@ Only constraint: don't touch the `b00NN` id in the heading.
 
 ---
 
-## ⚠️ Important: don't drop thinking signatures
+## ⚠️ Be careful with thinking blocks
 
-The `thinking` blocks may look empty in the jsonl (`thinking: ""`) but the `signature` field is the **encrypted full thinking content** that the server decodes for round-trip reasoning. Deleting thinking sections silently degrades reasoning quality on resume.
+The `thinking` blocks may look empty in the jsonl (`thinking: ""`), but the `signature` field is the **encrypted full thinking content** that the server decodes for round-trip reasoning. Since you can't see what's actually inside, **deleting an isolated thinking block is a blind delete** — and unlike a `tool_result` you read first, you have no idea whether you're throwing away something the server will rely on later.
 
-See `SKILL.md` "❌ 反模式" section for full details and the Anthropic docs quote.
+Default behavior: **leave thinking alone**.
+
+When deleting *is* fine: if the whole surrounding turn (user input, assistant text, tool calls and results) is already going to be deleted, then the thinking block in that turn naturally goes with it — there's no remaining context for the server to condition on anyway. What you should not do is selectively keep the user / assistant text but drop the thinking — that breaks the consecutive-thinking-sequence guarantee in the Anthropic docs and may degrade reasoning quality or even get rejected.
+
+See `SKILL.md` for details.
 
 ---
 
