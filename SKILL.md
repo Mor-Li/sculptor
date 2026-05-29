@@ -41,6 +41,22 @@ $ <command>
 
 `b00NN` is the anchor; the postprocessor uses it to locate the original jsonl record. A `tool_use` and its corresponding `tool_result` are packed into the same section — delete them together to avoid pairing orphans.
 
+## Editing efficiently: use `redit.py` for bulk deletes
+
+The built-in `Edit` tool requires `old_string` to be the **exact full text** of the region being replaced. For a 50KB section that costs ~12,500 output tokens to type out, plus the same amount of input tokens forever in the session (the tool_use record stays in context). For a large `edit.md` (often several MB) this is prohibitive.
+
+Use `redit.py` instead — it takes only the **short boundary markers** and computes the region locally:
+
+```bash
+~/.claude/skills/sculptor/scripts/redit.py edit.md \
+  --start "### turn 5 · think · b0123" \
+  --end   "### turn 5 · asst · b0124"
+```
+
+Defaults: `--start` is included in the deletion (it's the head of the region you want to delete), `--end` is excluded (it's the sentinel marking the next section that should be preserved). Pass `--dry-run` to preview first. Pass `--new "<text>"` to replace instead of delete (useful for the "rewrite body as merged summary" pattern). The tool fails fast if `--start` isn't unique in the file, and warns if `--end` matches multiple times after `--start`.
+
+Cost: deleting 100 sections via `redit.py` ≈ a few hundred tokens of CLI args, vs. tens of MB via `Edit`.
+
 ## Three intents
 
 | What the agent does | Postprocess result |
