@@ -41,7 +41,19 @@ $ <command>
 
 `b00NN` is the anchor; the postprocessor uses it to locate the original jsonl record. A `tool_use` and its corresponding `tool_result` are packed into the same section — delete them together to avoid pairing orphans.
 
-## Editing efficiently: use `redit.py` for bulk deletes
+## Getting your bearings
+
+Before editing, it helps to have a sense of what's in `edit.md` overall — which turns are huge, which patterns repeat, which sections are obvious deletes. The most direct approach is to `Read` the whole file, but a freshly-cut session can range from tens of KB up to several MB; for the bigger ones it might not fit in your context or budget. A few cheap ways to get a global view without reading every byte:
+
+- `wc -l edit.md` / `grep -c "^### turn" edit.md` — quick size and section-count sanity
+- `grep -nE "^### turn " edit.md` — list every section heading; you see the whole structure (turn, kind, anchor, tokens, meta) line by line
+- pipe the heading list through `sort -t '·' -k 4 -n -r | head -30` (or eyeball it) to surface the biggest sections first
+- targeted `grep -A 20 "b0123"` to inspect one section without pulling its neighbours into context
+- Read with `offset` / `limit` for a specific region rather than the whole file
+
+How much context you want to spend on exploration vs. editing is your call. The point is to know enough about the global shape to make confident decisions; how you get there is up to you.
+
+## Editing efficiently: `redit.py` for bulk deletes
 
 The built-in `Edit` tool requires `old_string` to be the **exact full text** of the region being replaced. For a 50KB section that costs ~12,500 output tokens to type out, plus the same amount of input tokens forever in the session (the tool_use record stays in context). For a large `edit.md` (often several MB) this is prohibitive.
 
