@@ -16,6 +16,25 @@ claude --resume <new-sid>                                  # continue from there
 
 The original jsonl is never modified. The new jsonl lands in the same directory as the original and `claude --resume` picks it up automatically.
 
+## Where are these `<session.jsonl>` files?
+
+Claude Code stores each project's conversation history as `~/.claude/projects/<encoded-cwd>/<sid>.jsonl`. The directory name is the project's working directory with `/` replaced by `-`:
+
+| working directory (`cwd`) | session file path |
+|---|---|
+| `/Users/limo/Documents/GithubRepo/proactive-reading` | `~/.claude/projects/-Users-limo-Documents-GithubRepo-proactive-reading/<sid>.jsonl` |
+| `/Users/limo` (home) | `~/.claude/projects/-Users-limo/<sid>.jsonl` |
+
+`<sid>` is the session UUID. To find the most recent session for your current project:
+
+```bash
+ls -lat ~/.claude/projects/$(pwd | sed 's|/|-|g')/*.jsonl | head -3
+```
+
+Each line of the jsonl is one **record** (user input, assistant text, thinking block, tool_use, tool_result, etc.). `s1.py` parses these into the editable markdown shown below.
+
+After s2 produces `<new-sid>.jsonl`, dropping it into `~/.claude/projects/<encoded-cwd>/` (the same directory as the source) is what makes `claude --resume <new-sid>` find it. s2 writes the new jsonl to the same directory as the source by default, so this is automatic — unless you pass `-o <other-dir>`, in which case you need to `cp` it into place yourself (s2 will print a `cp ... && cd ... && claude --resume ...` one-liner showing exactly that).
+
 ## What the intermediate markdown looks like
 
 Each record becomes a section, headed like `### turn N · kind · b00NN · Ntokens · meta`:
