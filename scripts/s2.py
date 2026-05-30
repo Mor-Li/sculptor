@@ -310,7 +310,42 @@ def main() -> int:
     )
     print()
     new_sid = Path(result["out_jsonl"]).stem
-    print(f"恢复用: claude --resume {new_sid}")
+
+    # 拼一条 ready-to-paste 的 resume 命令。
+    # 需要: (1) cwd (从新 jsonl 任一条 record 的 cwd 字段读), (2) Claude Code
+    # 期望 jsonl 落在 ~/.claude/projects/<encoded-cwd>/, 若 s2 输出在别处,
+    # 提示先 cp。
+    out_jsonl = Path(result["out_jsonl"])
+    cwd = None
+    try:
+        with open(out_jsonl) as f:
+            for line in f:
+                rec = json.loads(line)
+                if rec.get("cwd"):
+                    cwd = rec["cwd"]
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+    if cwd:
+        encoded = str(Path(cwd).resolve()).replace("/", "-")
+        project_dir = Path.home() / ".claude" / "projects" / encoded
+        # 如果 s2 已经落在 project 目录, claude --resume 能直接扫到
+        if out_jsonl.parent.resolve() == project_dir.resolve():
+            print("恢复用 (直接复制即可):")
+            print(
+                f"  cd {cwd} && claude --dangerously-skip-permissions -r {new_sid}"
+            )
+        else:
+            print("恢复用 (先 cp 到 project 目录再 resume):")
+            print(f"  cp {out_jsonl} {project_dir}/ && \\")
+            print(
+                f"  cd {cwd} && claude --dangerously-skip-permissions -r {new_sid}"
+            )
+    else:
+        print(
+            f"恢复用 (未能从 session 读出 cwd): "
+            f"claude --dangerously-skip-permissions -r {new_sid}"
+        )
     return 0
 
 
