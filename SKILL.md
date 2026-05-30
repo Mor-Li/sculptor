@@ -1,6 +1,6 @@
 ---
 name: sculptor
-description: 'Active context management for Claude Code sessions. Translate session jsonl into editable markdown, let the agent read/edit (delete = hide, rewrite = merge, leave alone = keep), then translate back to a new jsonl that `claude --resume` picks up. Use when the user says "context is filling up / compact the conversation / trim history / let the agent organize the context" or when you proactively detect context pressure. Companion to the ICLR 2026 paper "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management" (arXiv:2508.04664).'
+description: 'Active context management for Claude Code sessions. Translate the session jsonl into editable markdown, let an agent read/edit (delete = hide, rewrite = merge, leave alone = keep), then translate back to a new jsonl that `claude --resume` picks up. Use when the user says "context is filling up / compact the conversation / trim history / let the agent organize the context" or when you proactively detect context pressure. **Recommended**: spawn a dedicated subagent (strong model, e.g. Opus) to do the editing — that way the main conversation only pays for the eventual `cd ... && claude --resume <sid>` one-liner, not the scanning / pattern-matching / dry-running work. Companion to the ICLR 2026 paper "Sculptor: Empowering LLMs with Cognitive Agency via Active Context Management" (arXiv:2508.04664).'
 ---
 
 # sculptor
@@ -58,32 +58,60 @@ If s2 wrote to some other directory (you passed `-o <other-dir>`):
 
 Paste, run, you're back in the same conversation — minus what you chose to cut.
 
-## Recommended invocation: delegate to a subagent
+## Typical scenario (this is how sculptor is meant to be used)
 
-Even with `redit.py` keeping per-edit token cost negligible, the **decision-making** for what to cut is mentally heavy: scan the whole markdown, recognize patterns, dry-run, verify, repeat. For a non-trivial session that can easily burn the main conversation's context just figuring out what to cut.
+The user has been chatting with Claude in some project for a long time and context is getting full. They tell Claude: "context is filling up, please trim this session" / "compact the conversation" / "整理一下" / etc.
 
-The cleanest pattern is to spawn a **dedicated subagent** for this work via the `Agent` tool, let it run the whole `s1 → explore → redit → s2` pipeline on its own context budget, and return only the resulting resume command back to the main conversation. The main conversation pays just the cost of the final answer, not the editing process.
+Claude's correct response is **not** to run s1 / redit / s2 itself — that would burn the same context the user is trying to relieve. Instead Claude should:
 
-Prefer a **strong model** (e.g. Opus) for this subagent — it has to read the markdown, identify patterns, and make judgment calls about what's safe to delete. Weak models tend to over-delete or miss the obvious wins.
+1. **Spawn a dedicated subagent** via the `Agent` tool (strong model, e.g. Opus).
+2. The subagent finds the current session jsonl by itself: `cwd` is known (the main conversation is running in some project), the path is `~/.claude/projects/$(echo "$CWD" | tr '/' '-')/<latest-mtime-jsonl>`.
+3. The subagent runs the whole `s1.py → explore → redit.py → s2.py` pipeline on its own context budget.
+4. The subagent returns to the main conversation the **single `cd ... && claude --dangerously-skip-permissions -r <new-sid>` one-liner** that s2 printed at the end.
+5. The user pastes that one-liner into a terminal (likely in another window) and resumes with the trimmed history.
 
-Example invocation (from inside Claude Code, when the user asks "please trim this session"):
+The main conversation pays only the cost of (1) and (4) — typically a few hundred tokens total — instead of the tens of K of tokens it would cost to scan and edit the markdown directly.
+
+## Recommended invocation
 
 ```
 Agent({
   subagent_type: "general-purpose",
-  description: "整理本 session jsonl",
+  description: "整理当前 session 的 jsonl 上下文",
   prompt: """
-  使用 sculptor 流程整理 <jsonl 路径>:
-    1. 跑 s1.py 产出 edit.md (备份 edit.before.md)
-    2. 用 grep 看全局 (不必 Read 整个 md), 找最大几十段
-    3. 用 redit.py 按 SKILL.md 列出的 pattern 批量裁
-    4. 跑 s2.py 产出新 jsonl
-    5. 返回 s2 打印的 cd ... && claude -r <sid> 一行给我
+  使用 sculptor 流程整理当前正在进行的 conversation:
+
+  1. 找到当前 session 的 jsonl. cwd 应当跟主 conversation 一致:
+       ENCODED=$(pwd | sed 's|/|-|g')
+       LATEST=$(ls -t ~/.claude/projects/$ENCODED/*.jsonl 2>/dev/null | head -1)
+     如果 ls 不到, 用 mtime 在 ~/.claude/projects/$ENCODED/ 里找最新的 jsonl.
+     注意: 主 conversation 当前正在往这个 jsonl 写; 我们读取的是当前的快照.
+
+  2. 跑 s1 把 jsonl 转 markdown, 同时备份:
+       ~/.claude/skills/sculptor/scripts/s1.py "$LATEST"
+       cp "${LATEST%.jsonl}.edit.md" "${LATEST%.jsonl}.edit.before.md"
+
+  3. 探索全局 (不要 Read 整个 md 文件, 它可能几 MB):
+       grep -nE "^### turn " "${LATEST%.jsonl}.edit.md" | sort -t '·' -k 4 -n -r | head -30
+     等等, 按 SKILL.md "Getting your bearings" 那段提示的方式.
+
+  4. 用 redit.py 按 SKILL.md 列出的 pattern (大 result 转述、boilerplate、
+     重复 Read、失败实验整段、image attachment、env-dump 等) 批量裁.
+     目标 30~50% jsonl token 降幅, 不追极限.
+     **不要单独删 thinking 块** (跟它的 turn 共生死, 见 SKILL.md 反模式).
+
+  5. 跑 s2 产出新 jsonl:
+       ~/.claude/skills/sculptor/scripts/s2.py "${LATEST%.jsonl}.edit.md"
+
+  6. 把 s2 最后打印的 "cd ... && claude --dangerously-skip-permissions -r <new-sid>"
+     那一行**原文返回**给我. 这就是我要交给用户的全部内容.
   """,
 })
 ```
 
-The subagent runs s1 → edit → s2 end-to-end and hands back exactly what the user needs to paste.
+The subagent does the whole job; the main conversation only relays the resulting one-liner to the user.
+
+**Choose a strong model**: this work needs judgment (which pattern applies, what's safe to delete, what to rewrite vs hide). Weak models tend to over-delete or miss obvious wins.
 
 ## What the intermediate markdown looks like
 
