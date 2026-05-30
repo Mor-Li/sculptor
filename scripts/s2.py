@@ -327,7 +327,14 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
     if cwd:
-        encoded = str(Path(cwd).resolve()).replace("/", "-")
+        # Claude Code 把 cwd 编码成 projects/ 下的目录名时, 既替换 '/' 也替换 '.':
+        # 例如 /Users/limo/.claude/skills/sculptor 变 -Users-limo--claude-skills-sculptor
+        # (注意 '/.' 变成 '--' 因为 '/' 和 '.' 都被换成 '-')。
+        encoded = (
+            str(Path(cwd).resolve())
+            .replace("/", "-")
+            .replace(".", "-")
+        )
         project_dir = Path.home() / ".claude" / "projects" / encoded
         # 如果 s2 已经落在 project 目录, claude --resume 能直接扫到
         if out_jsonl.parent.resolve() == project_dir.resolve():

@@ -25,10 +25,10 @@ Claude Code stores each project's conversation history as `~/.claude/projects/<e
 | `~/Documents/myproject` | `~/.claude/projects/-Users-<you>-Documents-myproject/<sid>.jsonl` |
 | `~` (home) | `~/.claude/projects/-Users-<you>/<sid>.jsonl` |
 
-`<sid>` is the session UUID. To find the most recent session for your current project:
+`<sid>` is the session UUID. To find the most recent session for your current project (note: Claude Code encodes both `/` **and** `.` as `-` in the directory name, so `/.claude/` becomes `--claude-`):
 
 ```bash
-ls -lat ~/.claude/projects/$(pwd | sed 's|/|-|g')/*.jsonl | head -3
+ls -lat ~/.claude/projects/$(pwd | sed 's|[/.]|-|g')/*.jsonl | head -3
 ```
 
 Each line of the jsonl is one **record** (user input, assistant text, thinking block, tool_use, tool_result, etc.). `s1.py` parses these into the editable markdown shown below.
@@ -82,7 +82,7 @@ Agent({
   使用 sculptor 流程整理当前正在进行的 conversation:
 
   1. 找到当前 session 的 jsonl. cwd 应当跟主 conversation 一致:
-       ENCODED=$(pwd | sed 's|/|-|g')
+       ENCODED=$(pwd | sed 's|[/.]|-|g')   # 注意 . 也要 encode 成 - (/.claude → --claude)
        LATEST=$(ls -t ~/.claude/projects/$ENCODED/*.jsonl 2>/dev/null | head -1)
      如果 ls 不到, 用 mtime 在 ~/.claude/projects/$ENCODED/ 里找最新的 jsonl.
      注意: 主 conversation 当前正在往这个 jsonl 写; 我们读取的是当前的快照.
