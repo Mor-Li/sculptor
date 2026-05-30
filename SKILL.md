@@ -22,8 +22,8 @@ Claude Code stores each project's conversation history as `~/.claude/projects/<e
 
 | working directory (`cwd`) | session file path |
 |---|---|
-| `/Users/limo/Documents/GithubRepo/proactive-reading` | `~/.claude/projects/-Users-limo-Documents-GithubRepo-proactive-reading/<sid>.jsonl` |
-| `/Users/limo` (home) | `~/.claude/projects/-Users-limo/<sid>.jsonl` |
+| `~/Documents/myproject` | `~/.claude/projects/-Users-<you>-Documents-myproject/<sid>.jsonl` |
+| `~` (home) | `~/.claude/projects/-Users-<you>/<sid>.jsonl` |
 
 `<sid>` is the session UUID. To find the most recent session for your current project:
 
@@ -33,7 +33,57 @@ ls -lat ~/.claude/projects/$(pwd | sed 's|/|-|g')/*.jsonl | head -3
 
 Each line of the jsonl is one **record** (user input, assistant text, thinking block, tool_use, tool_result, etc.). `s1.py` parses these into the editable markdown shown below.
 
-After s2 produces `<new-sid>.jsonl`, dropping it into `~/.claude/projects/<encoded-cwd>/` (the same directory as the source) is what makes `claude --resume <new-sid>` find it. s2 writes the new jsonl to the same directory as the source by default, so this is automatic — unless you pass `-o <other-dir>`, in which case you need to `cp` it into place yourself (s2 will print a `cp ... && cd ... && claude --resume ...` one-liner showing exactly that).
+## What s2.py prints when it's done
+
+s2 ends by printing a **ready-to-paste resume command**, so you don't have to assemble the path yourself. Two variants depending on where the new jsonl landed:
+
+If s2 wrote directly into `~/.claude/projects/<encoded-cwd>/` (the default — same directory as the source jsonl):
+
+```
+✓ wrote ~/.claude/projects/-Users-<you>-Documents-myproject/<new-sid>.jsonl
+  ...
+  tokens kept: 51,230  (hidden -88,470)
+
+恢复用 (直接复制即可):
+  cd ~/Documents/myproject && claude --dangerously-skip-permissions -r <new-sid>
+```
+
+If s2 wrote to some other directory (you passed `-o <other-dir>`):
+
+```
+恢复用 (先 cp 到 project 目录再 resume):
+  cp /tmp/out/<new-sid>.jsonl ~/.claude/projects/-Users-<you>-Documents-myproject/ && \
+  cd ~/Documents/myproject && claude --dangerously-skip-permissions -r <new-sid>
+```
+
+Paste, run, you're back in the same conversation — minus what you chose to cut.
+
+## Recommended invocation: delegate to a subagent
+
+Even with `redit.py` keeping per-edit token cost negligible, the **decision-making** for what to cut is mentally heavy: scan the whole markdown, recognize patterns, dry-run, verify, repeat. For a non-trivial session that can easily burn the main conversation's context just figuring out what to cut.
+
+The cleanest pattern is to spawn a **dedicated subagent** for this work via the `Agent` tool, let it run the whole `s1 → explore → redit → s2` pipeline on its own context budget, and return only the resulting resume command back to the main conversation. The main conversation pays just the cost of the final answer, not the editing process.
+
+Prefer a **strong model** (e.g. Opus) for this subagent — it has to read the markdown, identify patterns, and make judgment calls about what's safe to delete. Weak models tend to over-delete or miss the obvious wins.
+
+Example invocation (from inside Claude Code, when the user asks "please trim this session"):
+
+```
+Agent({
+  subagent_type: "general-purpose",
+  description: "整理本 session jsonl",
+  prompt: """
+  使用 sculptor 流程整理 <jsonl 路径>:
+    1. 跑 s1.py 产出 edit.md (备份 edit.before.md)
+    2. 用 grep 看全局 (不必 Read 整个 md), 找最大几十段
+    3. 用 redit.py 按 SKILL.md 列出的 pattern 批量裁
+    4. 跑 s2.py 产出新 jsonl
+    5. 返回 s2 打印的 cd ... && claude -r <sid> 一行给我
+  """,
+})
+```
+
+The subagent runs s1 → edit → s2 end-to-end and hands back exactly what the user needs to paste.
 
 ## What the intermediate markdown looks like
 
